@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dioptas-batch-gui"
+dynamic = ["version"]
+description = "GUI app for automated batch processing of Lambda detector data with Dioptas"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-only" }
+authors = [
+  { name = "Dioptas Batch GUI contributors" }
+]
+keywords = ["xrd", "dioptas", "batch", "gui", "pyqt"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "dioptas",
+  "numpy",
+  "h5py",
+  "watchdog",
+  "PyQt6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff",
+]
+
+[project.scripts]
+dioptas-batch-gui = "dioptas_batch_gui.gui:main"
+dioptas_batch_gui = "dioptas_batch_gui.gui:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dioptas_batch_gui*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "dioptas_batch_gui.version.__version__" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

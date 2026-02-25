@@ -57,7 +57,7 @@ def main():
         print("✓ All required dependencies are installed!")
         print()
         print("You can now run the GUI with:")
-        print("  python batch_gui.py")
+        print("  python -m dioptas_batch_gui")
     else:
         print("✗ Some dependencies are missing.")
         print()

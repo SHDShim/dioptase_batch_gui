@@ -1,0 +1,6 @@
+# Runtime dependencies
+dioptas
+PyQt6
+watchdog
+numpy
+h5py
