@@ -56,7 +56,7 @@ pip install dioptas
 3. Clone this repository and move into the project folder.
 
 ```bash
-git clone https://github.com/<your-username>/dioptas_batch_gui.git
+git clone https://github.com/SHDShim/dioptase_batch_gui
 cd dioptas_batch_gui
 ```
 
