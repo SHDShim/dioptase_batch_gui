@@ -34,27 +34,45 @@ dioptas_batch_gui/
 ## Requirements
 
 - Python 3.10+
-- Dioptas
-- PyQt6
-- watchdog
-- numpy
-- h5py
+- conda (recommended for environment management)
 
-## Installation
+## Installation (Recommended)
+
+Set up in this order:
+
+1. Create and activate a conda environment named `dioptas`.
+
+```bash
+conda create -n dioptas python=3.10 -y
+conda activate dioptas
+```
+
+2. Install Dioptas first inside that environment.
+
+```bash
+pip install dioptas
+```
+
+3. Clone this repository and move into the project folder.
+
+```bash
+git clone https://github.com/<your-username>/dioptas_batch_gui.git
+cd dioptas_batch_gui
+```
+
+4. Install this package in editable mode from the repository root.
 
 ```bash
 pip install -e .
 ```
 
-If Dioptas is not already installed in your environment, install it first.
-
-## Usage
-
-Run dependency checks:
+5. (Optional) Verify required dependencies.
 
 ```bash
 python check_dependencies.py
 ```
+
+## Usage
 
 Launch GUI (recommended):
 
