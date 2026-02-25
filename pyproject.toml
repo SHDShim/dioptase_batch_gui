@@ -35,6 +35,7 @@ dev = [
 ]
 
 [project.scripts]
+dbgui = "dioptas_batch_gui.gui:main"
 dioptas-batch-gui = "dioptas_batch_gui.gui:main"
 dioptas_batch_gui = "dioptas_batch_gui.gui:main"
 

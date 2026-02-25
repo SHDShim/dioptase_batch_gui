@@ -69,6 +69,8 @@ python -m dioptas_batch_gui
 Installed CLI commands (work from any directory once your environment is active):
 
 ```bash
+dbgui
+# or
 dioptas_batch_gui
 # or
 dioptas-batch-gui

@@ -15,7 +15,7 @@ python -m dioptas_batch_gui
 After `pip install -e .` (or `pip install .`), you can also launch from any directory:
 
 ```bash
-dioptas_batch_gui
+dbgui
 ```
 
 ## 3. Configure
