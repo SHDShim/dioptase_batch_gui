@@ -28,7 +28,6 @@ dioptas_batch_gui/
 ├── LICENSE
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
-├── CODE_OF_CONDUCT.md
 └── SECURITY.md
 ```
 
