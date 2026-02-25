@@ -49,6 +49,8 @@ class BatchProcessor:
         self.calibration_file = calibration_file
         self.output_directory = Path(output_directory)
         self.mask_file = mask_file
+        self._mask_available = False
+        self._mask_shape_loaded = None
         self.num_points = num_points
         self.integration_method = integration_method
         self.cake_azimuth_points = cake_azimuth_points
@@ -85,13 +87,41 @@ class BatchProcessor:
             raise
             
     def _load_mask(self):
-        """Load mask file if provided."""
-        if self.mask_file and os.path.exists(self.mask_file):
-            try:
-                self.config.mask_model.load_mask(self.mask_file)
-                logger.info(f"Mask loaded: {self.mask_file}")
-            except Exception as e:
-                logger.warning(f"Failed to load mask: {e}")
+        """Validate mask path and configure mask usage flag."""
+        if not self.mask_file:
+            self._mask_available = False
+            return
+
+        if not os.path.exists(self.mask_file):
+            logger.warning(f"Mask file does not exist and will be ignored: {self.mask_file}")
+            self._mask_available = False
+            return
+
+        # Actual loading is deferred until image dimensions are known.
+        self._mask_available = True
+        self.config.use_mask = False
+        logger.info(f"Mask configured: {self.mask_file}")
+
+    def _ensure_mask_loaded_for_current_image(self):
+        """
+        Ensure mask is loaded for the current image shape.
+        Dioptas mask loading requires the mask model dimension to match image data.
+        """
+        if not self._mask_available:
+            return
+
+        img_data = getattr(self.config.img_model, "img_data", None)
+        if img_data is None:
+            return
+
+        image_shape = tuple(img_data.shape)
+        if self._mask_shape_loaded == image_shape:
+            return
+
+        self.config.mask_model.set_dimension(image_shape)
+        self.config.mask_model.load_mask(self.mask_file)
+        self._mask_shape_loaded = image_shape
+        logger.info(f"Mask loaded for image shape {image_shape}: {self.mask_file}")
                 
     def group_lambda_files(self, file_list: List[str]) -> List[List[str]]:
         """
@@ -161,7 +191,9 @@ class BatchProcessor:
                             image_index: int,
                             base_output_name: str,
                             export_chi: bool = True,
-                            export_cake_npy: bool = True) -> dict:
+                            export_cake_npy: bool = True,
+                            apply_mask_to_chi: bool = True,
+                            apply_mask_to_cake: bool = False) -> dict:
         """
         Process a single detector image.
         Handles both multi-module Lambda files and single HDF5 files.
@@ -172,6 +204,8 @@ class BatchProcessor:
             base_output_name: Base name for output files
             export_chi: Export 1D pattern as CHI file
             export_cake_npy: Export 2D cake as NPY file
+            apply_mask_to_chi: Apply mask during CHI integration
+            apply_mask_to_cake: Apply mask during cake integration
             
         Returns:
             Dictionary with processing results
@@ -194,10 +228,17 @@ class BatchProcessor:
                 self.config.img_model.blockSignals(True)
                 self.config.img_model.load(file_set[0], image_index)
                 self.config.img_model.blockSignals(False)
+
+            if self._mask_available and (apply_mask_to_chi or apply_mask_to_cake):
+                self._ensure_mask_loaded_for_current_image()
             
-            # Integrate (this performs both 1D and 2D integration)
+            # Integrate 1D (CHI) with optional mask
+            self.config.use_mask = bool(self._mask_available and apply_mask_to_chi)
             self.config.integrate_image_1d()
+
+            # Integrate 2D cake with optional mask
             if export_cake_npy:
+                self.config.use_mask = bool(self._mask_available and apply_mask_to_cake)
                 self.config.integrate_image_2d()
             
             # Export CHI file (1D pattern) - use base filename without _0000 suffix
@@ -273,6 +314,8 @@ class BatchProcessor:
                         file_set: List[str],
                         export_chi: bool = True,
                         export_cake_npy: bool = True,
+                        apply_mask_to_chi: bool = True,
+                        apply_mask_to_cake: bool = False,
                         progress_callback=None) -> dict:
         """
         Process all images in a Lambda file set.
@@ -281,6 +324,8 @@ class BatchProcessor:
             file_set: List of 3 Lambda files
             export_chi: Export 1D patterns as CHI files
             export_cake_npy: Export 2D cakes as NPY files
+            apply_mask_to_chi: Apply mask during CHI integration
+            apply_mask_to_cake: Apply mask during cake integration
             progress_callback: Optional callback function(current, total, status_msg)
             
         Returns:
@@ -314,7 +359,13 @@ class BatchProcessor:
                 progress_callback(img_idx + 1, n_images, f"Processing image {img_idx + 1}/{n_images}")
                 
             results = self.process_lambda_image(
-                file_set, img_idx, base_name, export_chi, export_cake_npy
+                file_set,
+                img_idx,
+                base_name,
+                export_chi,
+                export_cake_npy,
+                apply_mask_to_chi,
+                apply_mask_to_cake,
             )
             
             if results['success']:
@@ -372,7 +423,10 @@ class BatchProcessor:
             logger.info(f"Processing file set {i+1}/{len(file_groups)}")
             
             stats = self.process_file_set(
-                file_set, export_chi, export_cake_npy, progress_callback
+                file_set,
+                export_chi=export_chi,
+                export_cake_npy=export_cake_npy,
+                progress_callback=progress_callback,
             )
             
             overall_stats['total_processed'] += stats['processed']

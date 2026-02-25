@@ -28,12 +28,22 @@ class ProcessingThread(QThread):
     finished = pyqtSignal(dict)  # statistics
     error = pyqtSignal(str)
     
-    def __init__(self, processor, file_set, export_chi, export_cake):
+    def __init__(
+        self,
+        processor,
+        file_set,
+        export_chi,
+        export_cake,
+        apply_mask_to_chi,
+        apply_mask_to_cake,
+    ):
         super().__init__()
         self.processor = processor
         self.file_set = file_set
         self.export_chi = export_chi
         self.export_cake = export_cake
+        self.apply_mask_to_chi = apply_mask_to_chi
+        self.apply_mask_to_cake = apply_mask_to_cake
         
     def run(self):
         """Process files in background."""
@@ -42,6 +52,8 @@ class ProcessingThread(QThread):
                 self.file_set,
                 self.export_chi,
                 self.export_cake,
+                self.apply_mask_to_chi,
+                self.apply_mask_to_cake,
                 progress_callback=self._progress_callback
             )
             self.finished.emit(stats)
@@ -67,6 +79,11 @@ class DioptasBatchGUI(QMainWindow):
         self.processing_thread = None
         self.pending_files = []
         self.selected_files = []
+        self.current_file_set = []
+        self.current_mode = "idle"  # idle | batch | watch
+        self.requested_input_files = 0
+        self.requested_file_sets = 0
+        self.completed_file_sets = 0
         
         # Setup logging
         self._setup_logging()
@@ -164,27 +181,23 @@ class DioptasBatchGUI(QMainWindow):
         options_group = QGroupBox("Processing Options")
         options_layout = QVBoxLayout()
         
-        # Integration points
-        points_layout = QHBoxLayout()
-        points_layout.addWidget(QLabel("Integration Points (1D):"))
+        # Integration controls (side by side)
+        integration_layout = QHBoxLayout()
+        integration_layout.addWidget(QLabel("Integration Points (1D):"))
         self.integration_points_spin = QSpinBox()
         self.integration_points_spin.setRange(500, 10000)
         self.integration_points_spin.setValue(4857)
         self.integration_points_spin.setSingleStep(100)
-        points_layout.addWidget(self.integration_points_spin)
-        points_layout.addStretch()
-        options_layout.addLayout(points_layout)
-        
-        # Cake azimuth points
-        azi_layout = QHBoxLayout()
-        azi_layout.addWidget(QLabel("Azimuth Bins (2D):"))
+        integration_layout.addWidget(self.integration_points_spin)
+        integration_layout.addSpacing(20)
+        integration_layout.addWidget(QLabel("Azimuth Bins (2D):"))
         self.azimuth_points_spin = QSpinBox()
         self.azimuth_points_spin.setRange(100, 2000)
         self.azimuth_points_spin.setValue(360)
         self.azimuth_points_spin.setSingleStep(10)
-        azi_layout.addWidget(self.azimuth_points_spin)
-        azi_layout.addStretch()
-        options_layout.addLayout(azi_layout)
+        integration_layout.addWidget(self.azimuth_points_spin)
+        integration_layout.addStretch()
+        options_layout.addLayout(integration_layout)
         
         # Export options
         export_layout = QHBoxLayout()
@@ -196,6 +209,17 @@ class DioptasBatchGUI(QMainWindow):
         self.export_npy_cb.setChecked(True)
         export_layout.addWidget(self.export_npy_cb)
         options_layout.addLayout(export_layout)
+
+        # Mask application options
+        mask_apply_layout = QHBoxLayout()
+        self.apply_mask_to_chi_cb = QCheckBox("Apply mask to CHI (1D)")
+        self.apply_mask_to_chi_cb.setChecked(True)
+        mask_apply_layout.addWidget(self.apply_mask_to_chi_cb)
+
+        self.apply_mask_to_cake_cb = QCheckBox("Apply mask to cake (2D)")
+        self.apply_mask_to_cake_cb.setChecked(False)
+        mask_apply_layout.addWidget(self.apply_mask_to_cake_cb)
+        options_layout.addLayout(mask_apply_layout)
         
         # Overwrite option
         overwrite_layout = QHBoxLayout()
@@ -371,6 +395,8 @@ class DioptasBatchGUI(QMainWindow):
         self.cal_file_edit.setText(settings.value("cal_file", ""))
         self.mask_file_edit.setText(settings.value("mask_file", ""))
         self.watch_dir_edit.setText(settings.value("watch_dir", ""))
+        self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
+        self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
         
     def _save_settings(self):
         """Save current settings."""
@@ -379,6 +405,8 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("cal_file", self.cal_file_edit.text())
         settings.setValue("mask_file", self.mask_file_edit.text())
         settings.setValue("watch_dir", self.watch_dir_edit.text())
+        settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
+        settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
     
     def _browse_watch_dir(self):
         """Browse for watch directory."""
@@ -462,6 +490,10 @@ class DioptasBatchGUI(QMainWindow):
                 return
                 
             self._append_log(f"=== Processing {len(file_groups)} file set(s) ===")
+            self.current_mode = "batch"
+            self.requested_input_files = len(self.selected_files)
+            self.requested_file_sets = len(file_groups)
+            self.completed_file_sets = 0
             
             # Disable controls
             self.process_batch_btn.setEnabled(False)
@@ -469,6 +501,7 @@ class DioptasBatchGUI(QMainWindow):
             
             # Process files
             self.pending_files = [f for group in file_groups for f in group]
+            self._update_stats_label()
             self._process_next_batch()
             
         except Exception as e:
@@ -497,6 +530,10 @@ class DioptasBatchGUI(QMainWindow):
                 cake_azimuth_points=self.azimuth_points_spin.value(),
                 overwrite=self.overwrite_cb.isChecked()
             )
+            self.current_mode = "watch"
+            self.requested_input_files = 0
+            self.requested_file_sets = 0
+            self.completed_file_sets = 0
             
             # Initialize file watcher
             self.file_watcher = FileWatcher(self.watch_dir_edit.text())
@@ -580,6 +617,7 @@ class DioptasBatchGUI(QMainWindow):
             
         # Process first complete set
         file_set = file_groups[0]
+        self.current_file_set = file_set
         
         # Remove processed files from pending
         for f in file_set:
@@ -591,29 +629,44 @@ class DioptasBatchGUI(QMainWindow):
             self.processor,
             file_set,
             self.export_chi_cb.isChecked(),
-            self.export_npy_cb.isChecked()
+            self.export_npy_cb.isChecked(),
+            self.apply_mask_to_chi_cb.isChecked(),
+            self.apply_mask_to_cake_cb.isChecked(),
         )
         self.processing_thread.progress.connect(self._update_progress)
         self.processing_thread.finished.connect(self._processing_finished)
         self.processing_thread.error.connect(self._processing_error)
         self.processing_thread.start()
-        
+        self._append_log("-" * 80)
+        self._append_log(f"Starting file set: {Path(file_set[0]).stem}")
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%v/%m images")
         self.status_label.setText(f"Status: Processing {Path(file_set[0]).stem}...")
+        self._update_stats_label()
         
     def _update_progress(self, current, total, message):
         """Update progress bar."""
-        self.progress_bar.setMaximum(total)
+        self.progress_bar.setMaximum(max(total, 1))
         self.progress_bar.setValue(current)
+        if self.current_mode == "batch" and self.requested_file_sets:
+            current_set_idx = self.completed_file_sets + 1
+            self.status_label.setText(
+                f"Status: File set {current_set_idx}/{self.requested_file_sets} | {message}"
+            )
+        else:
+            self.status_label.setText(f"Status: {message}")
         
     def _processing_finished(self, stats):
         """Handle processing completion."""
         self.processing_thread = None
+        self.completed_file_sets += 1
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
         
         self._append_log(f"Completed: {stats['processed']}/{stats['total_images']} images")
         
         # Update stats
-        self.stats_label.setText(f"Last batch: {stats['processed']} images | Pending: {len(self.pending_files)}")
+        self._update_stats_label(stats)
         
         # Process next batch if available
         if self.pending_files:
@@ -634,6 +687,32 @@ class DioptasBatchGUI(QMainWindow):
         self.progress_bar.setValue(0)
         self._append_log(f"ERROR: {error_msg}")
         self.status_label.setText("Status: Error occurred")
+        self._update_stats_label()
+
+    def _update_stats_label(self, last_stats=None):
+        """Update summary stats text based on current mode."""
+        pending_count = len(self.pending_files)
+        if self.current_mode == "batch" and self.requested_file_sets:
+            if last_stats:
+                last_batch_text = (
+                    f"Last batch: {last_stats.get('processed', 0)}/{last_stats.get('total_images', 0)} images"
+                )
+            else:
+                last_batch_text = "Last batch: -"
+            self.stats_label.setText(
+                f"Requested files: {self.requested_input_files} | "
+                f"File sets: {self.completed_file_sets}/{self.requested_file_sets} | "
+                f"{last_batch_text} | Pending files: {pending_count}"
+            )
+            return
+
+        if last_stats:
+            self.stats_label.setText(
+                f"Last batch: {last_stats.get('processed', 0)}/{last_stats.get('total_images', 0)} images | "
+                f"Pending files: {pending_count}"
+            )
+        else:
+            self.stats_label.setText(f"Files processed: 0 | Pending: {pending_count}")
         
     def closeEvent(self, event):
         """Handle window close."""
