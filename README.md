@@ -74,13 +74,13 @@ python check_dependencies.py
 
 ## Usage
 
-Launch GUI (recommended):
+Installed CLI commands (work from any directory once your environment is active in terminal or console):
+
+After:
 
 ```bash
-python -m dioptas_batch_gui
+conda activate dioptas
 ```
-
-Installed CLI commands (work from any directory once your environment is active):
 
 ```bash
 dbgui
@@ -89,6 +89,13 @@ dioptas_batch_gui
 # or
 dioptas-batch-gui
 ```
+
+Launch GUI:
+
+```bash
+python -m dioptas_batch_gui
+```
+
 
 ## Output
 
