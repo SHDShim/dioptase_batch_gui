@@ -22,9 +22,6 @@ dioptas_batch_gui/
 │   ├── gui.py
 │   ├── batch_processor.py
 │   └── file_watcher.py
-├── batch_gui.py           # Compatibility launcher
-├── batch_processor.py     # Compatibility launcher
-├── file_watcher.py        # Compatibility launcher
 ├── check_dependencies.py
 ├── pyproject.toml
 ├── requirements.txt
@@ -74,12 +71,6 @@ dbgui
 dioptas_batch_gui
 # or
 dioptas-batch-gui
-```
-
-Compatibility launch command from repo root:
-
-```bash
-python batch_gui.py
 ```
 
 ## Output
