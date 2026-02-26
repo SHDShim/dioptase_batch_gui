@@ -33,6 +33,8 @@ class ProcessingThread(QThread):
         processor,
         file_set,
         export_chi,
+        export_xy,
+        export_dat,
         export_cake,
         apply_mask_to_chi,
         apply_mask_to_cake,
@@ -41,6 +43,8 @@ class ProcessingThread(QThread):
         self.processor = processor
         self.file_set = file_set
         self.export_chi = export_chi
+        self.export_xy = export_xy
+        self.export_dat = export_dat
         self.export_cake = export_cake
         self.apply_mask_to_chi = apply_mask_to_chi
         self.apply_mask_to_cake = apply_mask_to_cake
@@ -51,6 +55,8 @@ class ProcessingThread(QThread):
             stats = self.processor.process_file_set(
                 self.file_set,
                 self.export_chi,
+                self.export_xy,
+                self.export_dat,
                 self.export_cake,
                 self.apply_mask_to_chi,
                 self.apply_mask_to_cake,
@@ -126,17 +132,17 @@ class DioptasBatchGUI(QMainWindow):
         # Mode selector tabs
         self.mode_tabs = QTabWidget()
         
-        # Watch Mode Tab
-        watch_tab = QWidget()
-        watch_layout = QVBoxLayout(watch_tab)
-        self._create_watch_mode_ui(watch_layout)
-        self.mode_tabs.addTab(watch_tab, "Watch Mode (Auto)")
-        
         # Batch Mode Tab
         batch_tab = QWidget()
         batch_layout = QVBoxLayout(batch_tab)
         self._create_batch_mode_ui(batch_layout)
         self.mode_tabs.addTab(batch_tab, "Batch Mode (Manual)")
+
+        # Watch Mode Tab
+        watch_tab = QWidget()
+        watch_layout = QVBoxLayout(watch_tab)
+        self._create_watch_mode_ui(watch_layout)
+        self.mode_tabs.addTab(watch_tab, "Watch Mode (Auto)")
         
         main_layout.addWidget(self.mode_tabs)
         
@@ -204,6 +210,14 @@ class DioptasBatchGUI(QMainWindow):
         self.export_chi_cb = QCheckBox("Export CHI files (1D patterns)")
         self.export_chi_cb.setChecked(True)
         export_layout.addWidget(self.export_chi_cb)
+
+        self.export_xy_cb = QCheckBox("Export XY files (1D patterns)")
+        self.export_xy_cb.setChecked(False)
+        export_layout.addWidget(self.export_xy_cb)
+
+        self.export_dat_cb = QCheckBox("Export DAT files (1D patterns)")
+        self.export_dat_cb.setChecked(False)
+        export_layout.addWidget(self.export_dat_cb)
         
         self.export_npy_cb = QCheckBox("Export NPY files (2D cakes)")
         self.export_npy_cb.setChecked(True)
@@ -219,15 +233,11 @@ class DioptasBatchGUI(QMainWindow):
         self.apply_mask_to_cake_cb = QCheckBox("Apply mask to cake (2D)")
         self.apply_mask_to_cake_cb.setChecked(False)
         mask_apply_layout.addWidget(self.apply_mask_to_cake_cb)
-        options_layout.addLayout(mask_apply_layout)
-        
-        # Overwrite option
-        overwrite_layout = QHBoxLayout()
         self.overwrite_cb = QCheckBox("Overwrite existing files")
         self.overwrite_cb.setChecked(False)
-        overwrite_layout.addWidget(self.overwrite_cb)
-        overwrite_layout.addStretch()
-        options_layout.addLayout(overwrite_layout)
+        mask_apply_layout.addWidget(self.overwrite_cb)
+        mask_apply_layout.addStretch()
+        options_layout.addLayout(mask_apply_layout)
         
         options_group.setLayout(options_layout)
         main_layout.addWidget(options_group)
@@ -255,7 +265,7 @@ class DioptasBatchGUI(QMainWindow):
         
         self.log_console = QTextEdit()
         self.log_console.setReadOnly(True)
-        self.log_console.setMinimumHeight(200)
+        self.log_console.setMinimumHeight(150)
         self.log_console.setStyleSheet("background-color: #f5f5f5; color: #000000; font-family: monospace;")
         log_layout.addWidget(self.log_console)
         
@@ -395,6 +405,8 @@ class DioptasBatchGUI(QMainWindow):
         self.cal_file_edit.setText(settings.value("cal_file", ""))
         self.mask_file_edit.setText(settings.value("mask_file", ""))
         self.watch_dir_edit.setText(settings.value("watch_dir", ""))
+        self.export_xy_cb.setChecked(settings.value("export_xy", False, type=bool))
+        self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
         self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
         
@@ -405,8 +417,22 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("cal_file", self.cal_file_edit.text())
         settings.setValue("mask_file", self.mask_file_edit.text())
         settings.setValue("watch_dir", self.watch_dir_edit.text())
+        settings.setValue("export_xy", self.export_xy_cb.isChecked())
+        settings.setValue("export_dat", self.export_dat_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
+
+    def _selected_1d_output_paths(self, base_name: str):
+        """Return selected 1D output paths for a base file name."""
+        output_dir = Path(self.output_dir_edit.text())
+        selected_paths = []
+        if self.export_chi_cb.isChecked():
+            selected_paths.append(output_dir / f"{base_name}.chi")
+        if self.export_xy_cb.isChecked():
+            selected_paths.append(output_dir / f"{base_name}.xy")
+        if self.export_dat_cb.isChecked():
+            selected_paths.append(output_dir / f"{base_name}.dat")
+        return selected_paths
     
     def _browse_watch_dir(self):
         """Browse for watch directory."""
@@ -464,6 +490,8 @@ class DioptasBatchGUI(QMainWindow):
             
         if not self._validate_config(check_watch_dir=False):
             return
+
+        self._save_settings()
             
         try:
             # Initialize processor
@@ -518,6 +546,8 @@ class DioptasBatchGUI(QMainWindow):
         """Start file watching and auto-processing."""
         if not self._validate_config(check_watch_dir=True):
             return
+
+        self._save_settings()
             
         try:
             # Initialize processor
@@ -548,11 +578,10 @@ class DioptasBatchGUI(QMainWindow):
             if existing_files:
                 # Check which files haven't been processed yet
                 unprocessed_files = []
-                output_dir = Path(self.output_dir_edit.text())
                 for file_path in existing_files:
                     base_name = Path(file_path).stem
-                    chi_path = output_dir / f"{base_name}.chi"
-                    if not chi_path.exists():
+                    required_1d_paths = self._selected_1d_output_paths(base_name)
+                    if not required_1d_paths or not all(path.exists() for path in required_1d_paths):
                         unprocessed_files.append(file_path)
                 
                 if unprocessed_files:
@@ -629,6 +658,8 @@ class DioptasBatchGUI(QMainWindow):
             self.processor,
             file_set,
             self.export_chi_cb.isChecked(),
+            self.export_xy_cb.isChecked(),
+            self.export_dat_cb.isChecked(),
             self.export_npy_cb.isChecked(),
             self.apply_mask_to_chi_cb.isChecked(),
             self.apply_mask_to_cake_cb.isChecked(),

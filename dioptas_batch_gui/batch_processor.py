@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Batch Processor Module for Dioptas Integration
-Processes Lambda detector files and exports to CHI and NPY formats.
+Processes Lambda detector files and exports to CHI/XY/DAT and NPY formats.
 """
 
 import os
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class BatchProcessor:
     """
     Handles batch processing of diffraction images using Dioptas.
-    Exports to CHI files (1D patterns) and NPY files (2D cake images).
+    Exports to CHI/XY/DAT files (1D patterns) and NPY files (2D cake images).
     """
     
     def __init__(self, 
@@ -187,7 +187,7 @@ class BatchProcessor:
         return 0
 
     def _build_output_paths(self, base_output_name: str) -> dict:
-        """Build output paths for CHI and cake exports for one image."""
+        """Build output paths for 1D and cake exports for one image."""
         cake_folder = self.output_directory / f"{base_output_name}-param"
         int_path = cake_folder / f"{base_output_name}.int.cake.npy"
         tth_path = cake_folder / f"{base_output_name}.tth.cake.npy"
@@ -195,6 +195,8 @@ class BatchProcessor:
 
         return {
             "chi_path": self.output_directory / f"{base_output_name}.chi",
+            "xy_path": self.output_directory / f"{base_output_name}.xy",
+            "dat_path": self.output_directory / f"{base_output_name}.dat",
             "cake_folder": cake_folder,
             "int_path": int_path,
             "tth_path": tth_path,
@@ -207,6 +209,8 @@ class BatchProcessor:
                             image_index: int,
                             base_output_name: str,
                             export_chi: bool = True,
+                            export_xy: bool = False,
+                            export_dat: bool = False,
                             export_cake_npy: bool = True,
                             apply_mask_to_chi: bool = True,
                             apply_mask_to_cake: bool = False) -> dict:
@@ -219,6 +223,8 @@ class BatchProcessor:
             image_index: Index of image to process
             base_output_name: Base name for output files
             export_chi: Export 1D pattern as CHI file
+            export_xy: Export 1D pattern as XY file
+            export_dat: Export 1D pattern as DAT file
             export_cake_npy: Export 2D cake as NPY file
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
@@ -229,6 +235,8 @@ class BatchProcessor:
         results = {
             'success': False,
             'chi_file': None,
+            'xy_file': None,
+            'dat_file': None,
             'npy_file': None,
             'npy_files': None,
             'skipped': False,
@@ -238,19 +246,30 @@ class BatchProcessor:
         try:
             # Fast path: skip opening HDF5/integration when all selected outputs already exist.
             chi_exists = paths["chi_path"].exists()
+            xy_exists = paths["xy_path"].exists()
+            dat_exists = paths["dat_path"].exists()
             cake_exists = (
                 paths["int_path"].exists()
                 and paths["tth_path"].exists()
                 and paths["azi_path"].exists()
             )
             chi_ready = (not export_chi) or chi_exists
+            xy_ready = (not export_xy) or xy_exists
+            dat_ready = (not export_dat) or dat_exists
             cake_ready = (not export_cake_npy) or cake_exists
             need_chi_processing = export_chi and (self.overwrite or not chi_exists)
+            need_xy_processing = export_xy and (self.overwrite or not xy_exists)
+            need_dat_processing = export_dat and (self.overwrite or not dat_exists)
             need_cake_processing = export_cake_npy and (self.overwrite or not cake_exists)
+            need_1d_processing = need_chi_processing or need_xy_processing or need_dat_processing
 
-            if not self.overwrite and chi_ready and cake_ready:
+            if not self.overwrite and chi_ready and xy_ready and dat_ready and cake_ready:
                 if export_chi:
                     results['chi_file'] = str(paths["chi_path"])
+                if export_xy:
+                    results['xy_file'] = str(paths["xy_path"])
+                if export_dat:
+                    results['dat_file'] = str(paths["dat_path"])
                 if export_cake_npy:
                     results['npy_files'] = [
                         str(paths["int_path"]),
@@ -291,13 +310,13 @@ class BatchProcessor:
                 self.config.img_model.blockSignals(False)
 
             if self._mask_available and (
-                (need_chi_processing and apply_mask_to_chi)
+                (need_1d_processing and apply_mask_to_chi)
                 or (need_cake_processing and apply_mask_to_cake)
             ):
                 self._ensure_mask_loaded_for_current_image()
             
-            # Integrate 1D (CHI) with optional mask
-            if need_chi_processing:
+            # Integrate 1D with optional mask
+            if need_1d_processing:
                 self.config.use_mask = bool(self._mask_available and apply_mask_to_chi)
                 self.config.integrate_image_1d()
 
@@ -306,7 +325,7 @@ class BatchProcessor:
                 self.config.use_mask = bool(self._mask_available and apply_mask_to_cake)
                 self.config.integrate_image_2d()
             
-            # Export CHI file (1D pattern) - use base filename without _0000 suffix
+            # Export 1D pattern files
             if export_chi:
                 chi_filename = paths["chi_path"].name
                 chi_path = paths["chi_path"]
@@ -319,6 +338,32 @@ class BatchProcessor:
                     self.config.save_pattern(str(chi_path))
                     results['chi_file'] = str(chi_path)
                     logger.debug(f"Saved CHI: {chi_filename}")
+
+            if export_xy:
+                xy_filename = paths["xy_path"].name
+                xy_path = paths["xy_path"]
+
+                if not need_xy_processing:
+                    logger.info(f"Skipping existing XY file: {xy_filename}")
+                    results['xy_file'] = str(xy_path)
+                    results['skipped'] = True
+                else:
+                    self.config.save_pattern(str(xy_path))
+                    results['xy_file'] = str(xy_path)
+                    logger.debug(f"Saved XY: {xy_filename}")
+
+            if export_dat:
+                dat_filename = paths["dat_path"].name
+                dat_path = paths["dat_path"]
+
+                if not need_dat_processing:
+                    logger.info(f"Skipping existing DAT file: {dat_filename}")
+                    results['dat_file'] = str(dat_path)
+                    results['skipped'] = True
+                else:
+                    self.config.save_pattern(str(dat_path))
+                    results['dat_file'] = str(dat_path)
+                    logger.debug(f"Saved DAT: {dat_filename}")
                 
             # Export cake as separate NPY files (intensity, azimuth/chi, two-theta)
             # Save in a subfolder: filename-param/
@@ -376,6 +421,8 @@ class BatchProcessor:
     def process_file_set(self, 
                         file_set: List[str],
                         export_chi: bool = True,
+                        export_xy: bool = False,
+                        export_dat: bool = False,
                         export_cake_npy: bool = True,
                         apply_mask_to_chi: bool = True,
                         apply_mask_to_cake: bool = False,
@@ -386,6 +433,8 @@ class BatchProcessor:
         Args:
             file_set: List of 3 Lambda files
             export_chi: Export 1D patterns as CHI files
+            export_xy: Export 1D patterns as XY files
+            export_dat: Export 1D patterns as DAT files
             export_cake_npy: Export 2D cakes as NPY files
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
@@ -400,6 +449,8 @@ class BatchProcessor:
             'failed': 0,
             'skipped': 0,
             'chi_files': [],
+            'xy_files': [],
+            'dat_files': [],
             'npy_files': []
         }
         
@@ -427,6 +478,8 @@ class BatchProcessor:
                 img_idx,
                 base_name,
                 export_chi,
+                export_xy,
+                export_dat,
                 export_cake_npy,
                 apply_mask_to_chi,
                 apply_mask_to_cake,
@@ -438,6 +491,10 @@ class BatchProcessor:
                     stats['skipped'] += 1
                 if results.get('chi_file'):
                     stats['chi_files'].append(results['chi_file'])
+                if results.get('xy_file'):
+                    stats['xy_files'].append(results['xy_file'])
+                if results.get('dat_file'):
+                    stats['dat_files'].append(results['dat_file'])
                 if results.get('npy_file'):
                     stats['npy_files'].append(results['npy_file'])
             else:
@@ -452,6 +509,8 @@ class BatchProcessor:
     def process_directory(self, 
                          input_directory: str,
                          export_chi: bool = True,
+                         export_xy: bool = False,
+                         export_dat: bool = False,
                          export_cake_npy: bool = True,
                          progress_callback=None) -> dict:
         """
@@ -460,6 +519,8 @@ class BatchProcessor:
         Args:
             input_directory: Directory containing Lambda files
             export_chi: Export 1D patterns as CHI files
+            export_xy: Export 1D patterns as XY files
+            export_dat: Export 1D patterns as DAT files
             export_cake_npy: Export 2D cakes as NPY files
             progress_callback: Optional callback function
             
@@ -494,6 +555,8 @@ class BatchProcessor:
             stats = self.process_file_set(
                 file_set,
                 export_chi=export_chi,
+                export_xy=export_xy,
+                export_dat=export_dat,
                 export_cake_npy=export_cake_npy,
                 progress_callback=progress_callback,
             )

@@ -44,6 +44,9 @@ Set up in this order:
 
 ```bash
 conda create -n dioptas python=3.10 -y
+```
+
+```
 conda activate dioptas
 ```
 
@@ -53,24 +56,12 @@ conda activate dioptas
 pip install dioptas
 ```
 
-3. Clone this repository and move into the project folder.
+3. Install this package.
 
 ```bash
-git clone https://github.com/SHDShim/dioptase_batch_gui
-cd dioptas_batch_gui
+pip install dioptas_batch_gui
 ```
 
-4. Install this package in editable mode from the repository root.
-
-```bash
-pip install -e .
-```
-
-5. (Optional) Verify required dependencies.
-
-```bash
-python check_dependencies.py
-```
 
 ## Usage
 
@@ -84,18 +75,18 @@ conda activate dioptas
 
 ```bash
 dbgui
-# or
+```
+or
+
+```
 dioptas_batch_gui
-# or
+```
+
+or
+
+```
 dioptas-batch-gui
 ```
-
-Launch GUI:
-
-```bash
-python -m dioptas_batch_gui
-```
-
 
 ## Output
 
