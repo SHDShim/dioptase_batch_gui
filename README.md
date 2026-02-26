@@ -59,8 +59,21 @@ pip install dioptas
 3. Install this package.
 
 ```bash
-pip install dioptas_batch_gui
+pip install dioptas-batch-gui
 ```
+
+## Update to the latest PyPI release
+
+```bash
+pip install --upgrade dioptas-batch-gui
+```
+
+## Force reinstall from PyPI
+
+```bash
+pip install --upgrade --force-reinstall dioptas-batch-gui
+```
+
 
 
 ## Usage
