@@ -663,7 +663,10 @@ class DioptasBatchGUI(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("%p%")
         
-        self._append_log(f"Completed: {stats['processed']}/{stats['total_images']} images")
+        self._append_log(
+            f"Completed: {stats['processed']}/{stats['total_images']} images "
+            f"(skipped: {stats.get('skipped', 0)})"
+        )
         
         # Update stats
         self._update_stats_label(stats)

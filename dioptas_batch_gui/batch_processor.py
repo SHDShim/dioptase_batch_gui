@@ -185,6 +185,22 @@ class BatchProcessor:
             logger.error(f"Error reading image count: {e}")
             
         return 0
+
+    def _build_output_paths(self, base_output_name: str) -> dict:
+        """Build output paths for CHI and cake exports for one image."""
+        cake_folder = self.output_directory / f"{base_output_name}-param"
+        int_path = cake_folder / f"{base_output_name}.int.cake.npy"
+        tth_path = cake_folder / f"{base_output_name}.tth.cake.npy"
+        azi_path = cake_folder / f"{base_output_name}.azi.cake.npy"
+
+        return {
+            "chi_path": self.output_directory / f"{base_output_name}.chi",
+            "cake_folder": cake_folder,
+            "int_path": int_path,
+            "tth_path": tth_path,
+            "azi_path": azi_path,
+            "poni_dest": cake_folder / Path(self.calibration_file).name,
+        }
         
     def process_lambda_image(self, 
                             file_set: List[str], 
@@ -210,9 +226,54 @@ class BatchProcessor:
         Returns:
             Dictionary with processing results
         """
-        results = {'success': False, 'chi_file': None, 'npy_file': None}
+        results = {
+            'success': False,
+            'chi_file': None,
+            'npy_file': None,
+            'npy_files': None,
+            'skipped': False,
+        }
+        paths = self._build_output_paths(base_output_name)
         
         try:
+            # Fast path: skip opening HDF5/integration when all selected outputs already exist.
+            chi_exists = paths["chi_path"].exists()
+            cake_exists = (
+                paths["int_path"].exists()
+                and paths["tth_path"].exists()
+                and paths["azi_path"].exists()
+            )
+            chi_ready = (not export_chi) or chi_exists
+            cake_ready = (not export_cake_npy) or cake_exists
+            need_chi_processing = export_chi and (self.overwrite or not chi_exists)
+            need_cake_processing = export_cake_npy and (self.overwrite or not cake_exists)
+
+            if not self.overwrite and chi_ready and cake_ready:
+                if export_chi:
+                    results['chi_file'] = str(paths["chi_path"])
+                if export_cake_npy:
+                    results['npy_files'] = [
+                        str(paths["int_path"]),
+                        str(paths["tth_path"]),
+                        str(paths["azi_path"]),
+                    ]
+                    results['npy_file'] = str(paths["int_path"])
+                    paths["cake_folder"].mkdir(parents=True, exist_ok=True)
+                    if not paths["poni_dest"].exists():
+                        try:
+                            import shutil
+                            shutil.copy2(self.calibration_file, paths["poni_dest"])
+                            logger.debug(f"Copied poni file to {paths['cake_folder']}")
+                        except Exception as e:
+                            logger.warning(f"Failed to copy poni file: {e}")
+
+                logger.info(
+                    f"Skipping image {image_index}: outputs already exist for {base_output_name}"
+                )
+                results['success'] = True
+                results['skipped'] = True
+                return results
+
             # Check if this is a multi-module Lambda file or single file
             if len(file_set) == 3:
                 # Multi-module Lambda detector
@@ -229,25 +290,28 @@ class BatchProcessor:
                 self.config.img_model.load(file_set[0], image_index)
                 self.config.img_model.blockSignals(False)
 
-            if self._mask_available and (apply_mask_to_chi or apply_mask_to_cake):
+            if self._mask_available and (
+                (need_chi_processing and apply_mask_to_chi)
+                or (need_cake_processing and apply_mask_to_cake)
+            ):
                 self._ensure_mask_loaded_for_current_image()
             
             # Integrate 1D (CHI) with optional mask
-            self.config.use_mask = bool(self._mask_available and apply_mask_to_chi)
-            self.config.integrate_image_1d()
+            if need_chi_processing:
+                self.config.use_mask = bool(self._mask_available and apply_mask_to_chi)
+                self.config.integrate_image_1d()
 
             # Integrate 2D cake with optional mask
-            if export_cake_npy:
+            if need_cake_processing:
                 self.config.use_mask = bool(self._mask_available and apply_mask_to_cake)
                 self.config.integrate_image_2d()
             
             # Export CHI file (1D pattern) - use base filename without _0000 suffix
             if export_chi:
-                chi_filename = f"{base_output_name}.chi"
-                chi_path = self.output_directory / chi_filename
+                chi_filename = paths["chi_path"].name
+                chi_path = paths["chi_path"]
                 
-                # Check if file exists and skip if not overwriting
-                if not self.overwrite and chi_path.exists():
+                if not need_chi_processing:
                     logger.info(f"Skipping existing CHI file: {chi_filename}")
                     results['chi_file'] = str(chi_path)
                     results['skipped'] = True
@@ -259,21 +323,13 @@ class BatchProcessor:
             # Export cake as separate NPY files (intensity, azimuth/chi, two-theta)
             # Save in a subfolder: filename-param/
             if export_cake_npy:
-                # Get cake data from Dioptas
-                # cake_img = 2D intensity array (azimuth x radial)
-                # cake_tth = 1D array of 2-theta values (radial axis)
-                # cake_azi = 1D array of azimuthal/chi values (azimuth axis)
-                intensity_cake = self.config.calibration_model.cake_img
-                tth_cake = self.config.calibration_model.cake_tth
-                chi_cake = self.config.calibration_model.cake_azi
-                
                 # Create subfolder for cake files: filename-param
-                cake_folder = self.output_directory / f"{base_output_name}-param"
+                cake_folder = paths["cake_folder"]
                 cake_folder.mkdir(parents=True, exist_ok=True)
                 
                 # Copy poni file to param folder
                 import shutil
-                poni_dest = cake_folder / Path(self.calibration_file).name
+                poni_dest = paths["poni_dest"]
                 if not poni_dest.exists() or self.overwrite:
                     try:
                         shutil.copy2(self.calibration_file, poni_dest)
@@ -281,26 +337,33 @@ class BatchProcessor:
                     except Exception as e:
                         logger.warning(f"Failed to copy poni file: {e}")
                 
-                # Save as 3 separate files matching user's format
-                int_filename = f"{base_output_name}.int.cake.npy"
-                tth_filename = f"{base_output_name}.tth.cake.npy"
-                azi_filename = f"{base_output_name}.azi.cake.npy"
-                
-                int_path = cake_folder / int_filename
-                tth_path = cake_folder / tth_filename
-                azi_path = cake_folder / azi_filename
-                
-                # Check if files exist and skip if not overwriting
-                if not self.overwrite and int_path.exists() and azi_path.exists() and tth_path.exists():
+                int_path = paths["int_path"]
+                tth_path = paths["tth_path"]
+                azi_path = paths["azi_path"]
+
+                if not need_cake_processing:
                     logger.info(f"Skipping existing cake files: {base_output_name}-param/{base_output_name}.*.cake.npy")
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
+                    results['npy_file'] = str(int_path)
                     results['skipped'] = True
                 else:
+                    # Get cake data from Dioptas
+                    # cake_img = 2D intensity array (azimuth x radial)
+                    # cake_tth = 1D array of 2-theta values (radial axis)
+                    # cake_azi = 1D array of azimuthal/chi values (azimuth axis)
+                    intensity_cake = self.config.calibration_model.cake_img
+                    tth_cake = self.config.calibration_model.cake_tth
+                    chi_cake = self.config.calibration_model.cake_azi
+
                     np.save(str(int_path), intensity_cake)
                     np.save(str(tth_path), tth_cake)
                     np.save(str(azi_path), chi_cake)
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
-                    logger.debug(f"Saved cake files in {base_output_name}-param/: {int_filename}, {tth_filename}, {azi_filename}")
+                    results['npy_file'] = str(int_path)
+                    logger.debug(
+                        f"Saved cake files in {base_output_name}-param/: "
+                        f"{base_output_name}.int.cake.npy, {base_output_name}.tth.cake.npy, {base_output_name}.azi.cake.npy"
+                    )
                 
             results['success'] = True
             
@@ -335,6 +398,7 @@ class BatchProcessor:
             'total_images': 0,
             'processed': 0,
             'failed': 0,
+            'skipped': 0,
             'chi_files': [],
             'npy_files': []
         }
@@ -370,6 +434,8 @@ class BatchProcessor:
             
             if results['success']:
                 stats['processed'] += 1
+                if results.get('skipped'):
+                    stats['skipped'] += 1
                 if results.get('chi_file'):
                     stats['chi_files'].append(results['chi_file'])
                 if results.get('npy_file'):
@@ -377,7 +443,10 @@ class BatchProcessor:
             else:
                 stats['failed'] += 1
                 
-        logger.info(f"Completed: {stats['processed']}/{n_images} images processed successfully")
+        logger.info(
+            f"Completed: {stats['processed']}/{n_images} images processed successfully "
+            f"(skipped: {stats['skipped']})"
+        )
         return stats
         
     def process_directory(self, 
