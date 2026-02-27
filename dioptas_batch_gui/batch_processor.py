@@ -47,7 +47,7 @@ class BatchProcessor:
             overwrite: Whether to overwrite existing files
         """
         self.calibration_file = calibration_file
-        self.output_directory = Path(output_directory)
+        self.output_directory = Path(output_directory).expanduser().resolve()
         self.mask_file = mask_file
         self._mask_available = False
         self._mask_shape_loaded = None
@@ -327,43 +327,40 @@ class BatchProcessor:
             
             # Export 1D pattern files
             if export_chi:
-                chi_filename = paths["chi_path"].name
                 chi_path = paths["chi_path"]
                 
                 if not need_chi_processing:
-                    logger.info(f"Skipping existing CHI file: {chi_filename}")
+                    logger.info(f"Skipping existing CHI file: {chi_path.resolve()}")
                     results['chi_file'] = str(chi_path)
                     results['skipped'] = True
                 else:
                     self.config.save_pattern(str(chi_path))
                     results['chi_file'] = str(chi_path)
-                    logger.debug(f"Saved CHI: {chi_filename}")
+                    logger.info(f"Saved CHI file: {chi_path.resolve()}")
 
             if export_xy:
-                xy_filename = paths["xy_path"].name
                 xy_path = paths["xy_path"]
 
                 if not need_xy_processing:
-                    logger.info(f"Skipping existing XY file: {xy_filename}")
+                    logger.info(f"Skipping existing XY file: {xy_path.resolve()}")
                     results['xy_file'] = str(xy_path)
                     results['skipped'] = True
                 else:
                     self.config.save_pattern(str(xy_path))
                     results['xy_file'] = str(xy_path)
-                    logger.debug(f"Saved XY: {xy_filename}")
+                    logger.info(f"Saved XY file: {xy_path.resolve()}")
 
             if export_dat:
-                dat_filename = paths["dat_path"].name
                 dat_path = paths["dat_path"]
 
                 if not need_dat_processing:
-                    logger.info(f"Skipping existing DAT file: {dat_filename}")
+                    logger.info(f"Skipping existing DAT file: {dat_path.resolve()}")
                     results['dat_file'] = str(dat_path)
                     results['skipped'] = True
                 else:
                     self.config.save_pattern(str(dat_path))
                     results['dat_file'] = str(dat_path)
-                    logger.debug(f"Saved DAT: {dat_filename}")
+                    logger.info(f"Saved DAT file: {dat_path.resolve()}")
                 
             # Export cake as separate NPY files (intensity, azimuth/chi, two-theta)
             # Save in a subfolder: filename-param/
@@ -387,7 +384,10 @@ class BatchProcessor:
                 azi_path = paths["azi_path"]
 
                 if not need_cake_processing:
-                    logger.info(f"Skipping existing cake files: {base_output_name}-param/{base_output_name}.*.cake.npy")
+                    logger.info(
+                        "Skipping existing cake files: "
+                        f"{int_path.resolve()}, {tth_path.resolve()}, {azi_path.resolve()}"
+                    )
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
                     results['npy_file'] = str(int_path)
                     results['skipped'] = True
@@ -405,9 +405,9 @@ class BatchProcessor:
                     np.save(str(azi_path), chi_cake)
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
                     results['npy_file'] = str(int_path)
-                    logger.debug(
-                        f"Saved cake files in {base_output_name}-param/: "
-                        f"{base_output_name}.int.cake.npy, {base_output_name}.tth.cake.npy, {base_output_name}.azi.cake.npy"
+                    logger.info(
+                        "Saved cake files: "
+                        f"{int_path.resolve()}, {tth_path.resolve()}, {azi_path.resolve()}"
                     )
                 
             results['success'] = True
