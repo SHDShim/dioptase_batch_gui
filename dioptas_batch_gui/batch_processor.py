@@ -65,14 +65,124 @@ class BatchProcessor:
         self._load_mask()
         
         # Configure integration parameters
-        self.config.integration_rad_points = num_points
-        self.config.cake_azimuth_points = cake_azimuth_points
+        self._apply_integration_settings()
         self.config.auto_integrate_cake = True  # Enable cake integration
         
         logger.info("Batch processor initialized")
         logger.info(f"Calibration: {calibration_file}")
         logger.info(f"Output: {output_directory}")
         logger.info(f"Integration points: {num_points}")
+        logger.info(f"CAKE radial points: {self._cake_radial_points()}")
+
+    def _cake_radial_points(self) -> int:
+        """CAKE radial bins are defined as 2x the 1D integration points."""
+        return int(self.num_points) * 2
+
+    def _set_config_attrs(self, candidates: List[str], value, label: str) -> List[str]:
+        """
+        Set value on matching Dioptas attributes across known config sub-models.
+        This avoids silently writing unused ad-hoc attributes when names differ
+        between Dioptas versions.
+        """
+        applied = []
+        targets = [("config", self.config)]
+        calibration_model = getattr(self.config, "calibration_model", None)
+        integration_model = getattr(self.config, "integration_model", None)
+        if calibration_model is not None:
+            targets.append(("calibration_model", calibration_model))
+        if integration_model is not None:
+            targets.append(("integration_model", integration_model))
+
+        for target_name, target_obj in targets:
+            for attr in candidates:
+                if hasattr(target_obj, attr):
+                    setattr(target_obj, attr, value)
+                    applied.append(f"{target_name}.{attr}")
+
+        if not applied:
+            logger.warning(
+                f"Could not map '{label}' to any known Dioptas config field. "
+                f"Tried: {', '.join(candidates)}"
+            )
+        else:
+            logger.info(f"Applied {label}={value} to: {', '.join(applied)}")
+
+        return applied
+
+    def _cake_matches_requested_resolution(self, paths: dict) -> bool:
+        """
+        Return True when existing cake files match requested GUI resolution.
+        """
+        try:
+            if not (paths["int_path"].exists() and paths["tth_path"].exists() and paths["azi_path"].exists()):
+                return False
+
+            tth = np.load(str(paths["tth_path"]), mmap_mode="r")
+            azi = np.load(str(paths["azi_path"]), mmap_mode="r")
+            intensity = np.load(str(paths["int_path"]), mmap_mode="r")
+
+            tth_len = int(np.asarray(tth).shape[0])
+            azi_len = int(np.asarray(azi).shape[0])
+            intensity_shape = tuple(np.asarray(intensity).shape)
+
+            expected_cake_rad = self._cake_radial_points()
+            if tth_len != expected_cake_rad or azi_len != int(self.cake_azimuth_points):
+                logger.info(
+                    "Existing cake resolution mismatch; will regenerate "
+                    f"(found tth={tth_len}, azi={azi_len}; "
+                    f"requested tth={expected_cake_rad}, azi={self.cake_azimuth_points})"
+                )
+                return False
+
+            if intensity_shape != (azi_len, tth_len):
+                logger.info(
+                    "Existing cake intensity shape mismatch; will regenerate "
+                    f"(found {intensity_shape}, expected {(azi_len, tth_len)})"
+                )
+                return False
+
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to validate existing cake resolution: {e}")
+            return False
+
+    def _get_existing_cake_dims(self, paths: dict) -> Optional[Tuple[Tuple[int, ...], int, int]]:
+        """Return existing cake dimensions as (intensity_shape, tth_len, azi_len)."""
+        try:
+            if not (paths["int_path"].exists() and paths["tth_path"].exists() and paths["azi_path"].exists()):
+                return None
+            intensity = np.load(str(paths["int_path"]), mmap_mode="r")
+            tth = np.load(str(paths["tth_path"]), mmap_mode="r")
+            azi = np.load(str(paths["azi_path"]), mmap_mode="r")
+            return (
+                tuple(np.asarray(intensity).shape),
+                int(np.asarray(tth).shape[0]),
+                int(np.asarray(azi).shape[0]),
+            )
+        except Exception:
+            return None
+
+    def _apply_integration_settings(self):
+        """Apply radial and azimuth integration settings for both 1D and CAKE."""
+        self._set_config_attrs(
+            [
+                "integration_rad_points",
+                "cake_rad_points",
+                "cake_tth_points",
+                "cake_integration_rad_points",
+            ],
+            self.num_points,
+            "integration points",
+        )
+        self._set_config_attrs(
+            [
+                "cake_azimuth_points",
+                "cake_azi_points",
+                "cake_chi_points",
+            ],
+            self.cake_azimuth_points,
+            "azimuth bins",
+        )
         
     def _load_calibration(self):
         """Load calibration file."""
@@ -248,11 +358,12 @@ class BatchProcessor:
             chi_exists = paths["chi_path"].exists()
             xy_exists = paths["xy_path"].exists()
             dat_exists = paths["dat_path"].exists()
-            cake_exists = (
+            cake_files_exist = (
                 paths["int_path"].exists()
                 and paths["tth_path"].exists()
                 and paths["azi_path"].exists()
             )
+            cake_exists = cake_files_exist and self._cake_matches_requested_resolution(paths)
             chi_ready = (not export_chi) or chi_exists
             xy_ready = (not export_xy) or xy_exists
             dat_ready = (not export_dat) or dat_exists
@@ -264,6 +375,7 @@ class BatchProcessor:
             need_1d_processing = need_chi_processing or need_xy_processing or need_dat_processing
 
             if not self.overwrite and chi_ready and xy_ready and dat_ready and cake_ready:
+                existing_dims = self._get_existing_cake_dims(paths) if export_cake_npy else None
                 if export_chi:
                     results['chi_file'] = str(paths["chi_path"])
                 if export_xy:
@@ -289,6 +401,12 @@ class BatchProcessor:
                 logger.info(
                     f"Skipping image {image_index}: outputs already exist for {base_output_name}"
                 )
+                if existing_dims is not None:
+                    logger.info(
+                        "Using existing CAKE files with bins: "
+                        f"intensity_shape={existing_dims[0]}, tth={existing_dims[1]}, azi={existing_dims[2]} "
+                        f"(requested tth={self._cake_radial_points()}, azi={self.cake_azimuth_points})"
+                    )
                 results['success'] = True
                 results['skipped'] = True
                 return results
@@ -314,6 +432,10 @@ class BatchProcessor:
                 or (need_cake_processing and apply_mask_to_cake)
             ):
                 self._ensure_mask_loaded_for_current_image()
+
+            # Re-apply integration settings in case Dioptas resets them on load.
+            if need_1d_processing or need_cake_processing:
+                self._apply_integration_settings()
             
             # Integrate 1D with optional mask
             if need_1d_processing:
@@ -323,7 +445,24 @@ class BatchProcessor:
             # Integrate 2D cake with optional mask
             if need_cake_processing:
                 self.config.use_mask = bool(self._mask_available and apply_mask_to_cake)
-                self.config.integrate_image_2d()
+                if self.config.use_mask:
+                    cake_mask = self.config.mask_model.get_mask()
+                elif self.config.mask_model.roi is not None:
+                    cake_mask = self.config.mask_model.roi_mask
+                else:
+                    cake_mask = None
+
+                # Call calibration_model directly so CAKE resolution is forced from GUI values.
+                logger.info(
+                    "Integrating CAKE with requested bins: "
+                    f"radial={self._cake_radial_points()}, azimuth={self.cake_azimuth_points}"
+                )
+                self.config.calibration_model.integrate_2d(
+                    mask=cake_mask,
+                    rad_points=self._cake_radial_points(),
+                    azimuth_points=int(self.cake_azimuth_points),
+                    azimuth_range=self.config.cake_azimuth_range,
+                )
             
             # Export 1D pattern files
             if export_chi:
@@ -399,6 +538,26 @@ class BatchProcessor:
                     intensity_cake = self.config.calibration_model.cake_img
                     tth_cake = self.config.calibration_model.cake_tth
                     chi_cake = self.config.calibration_model.cake_azi
+
+                    expected_cake_rad = self._cake_radial_points()
+                    expected_shape = (int(self.cake_azimuth_points), expected_cake_rad)
+                    actual_shape = tuple(np.asarray(intensity_cake).shape)
+                    actual_tth_len = int(np.asarray(tth_cake).shape[0])
+                    actual_azi_len = int(np.asarray(chi_cake).shape[0])
+                    if (
+                        actual_shape != expected_shape
+                        or actual_tth_len != expected_cake_rad
+                        or actual_azi_len != int(self.cake_azimuth_points)
+                    ):
+                        raise RuntimeError(
+                            "CAKE resolution mismatch after integration: "
+                            f"expected int={expected_shape}, tth={expected_cake_rad}, azi={self.cake_azimuth_points}; "
+                            f"got int={actual_shape}, tth={actual_tth_len}, azi={actual_azi_len}"
+                        )
+                    logger.info(
+                        "CAKE integrated with actual bins: "
+                        f"intensity_shape={actual_shape}, tth={actual_tth_len}, azi={actual_azi_len}"
+                    )
 
                     np.save(str(int_path), intensity_cake)
                     np.save(str(tth_path), tth_cake)

@@ -73,6 +73,7 @@ class ProcessingThread(QThread):
 
 class DioptasBatchGUI(QMainWindow):
     """Main GUI window for Dioptas batch processing."""
+    log_message = pyqtSignal(str)
     
     def __init__(self):
         super().__init__()
@@ -96,6 +97,7 @@ class DioptasBatchGUI(QMainWindow):
         
         # Create UI
         self._create_ui()
+        self.log_message.connect(self._append_log)
         
         # Timer to check for new files
         self.check_timer = QTimer()
@@ -103,6 +105,9 @@ class DioptasBatchGUI(QMainWindow):
         
         # Load saved settings
         self._load_settings()
+        self._append_log(
+            f"Runtime: v{__version__} | gui={Path(__file__).resolve()}"
+        )
         
     def _setup_logging(self):
         """Setup logging to GUI console."""
@@ -113,7 +118,10 @@ class DioptasBatchGUI(QMainWindow):
         formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s',
                                      datefmt='%H:%M:%S')
         self.log_handler.setFormatter(formatter)
-        
+        self.log_handler.emit = lambda record: self.log_message.emit(
+            self.log_handler.format(record)
+        )
+
         logger = logging.getLogger()
         logger.setLevel(logging.INFO)
         logger.addHandler(self.log_handler)
@@ -266,7 +274,9 @@ class DioptasBatchGUI(QMainWindow):
         self.log_console = QTextEdit()
         self.log_console.setReadOnly(True)
         self.log_console.setMinimumHeight(150)
-        self.log_console.setStyleSheet("background-color: #f5f5f5; color: #000000; font-family: monospace;")
+        self.log_console.setStyleSheet(
+            "background-color: #f5f5f5; color: #000000; font-family: Menlo, Monaco, 'Courier New';"
+        )
         log_layout.addWidget(self.log_console)
         
         clear_btn = QPushButton("Clear Log")
@@ -275,11 +285,6 @@ class DioptasBatchGUI(QMainWindow):
         
         log_group.setLayout(log_layout)
         main_layout.addWidget(log_group)
-        
-        # Connect log handler to text widget
-        self.log_handler.emit = lambda record: self._append_log(
-            self.log_handler.format(record)
-        )
         
     def _create_watch_mode_ui(self, layout):
         """Create UI for watch mode."""
@@ -405,6 +410,12 @@ class DioptasBatchGUI(QMainWindow):
         self.cal_file_edit.setText(settings.value("cal_file", ""))
         self.mask_file_edit.setText(settings.value("mask_file", ""))
         self.watch_dir_edit.setText(settings.value("watch_dir", ""))
+        self.integration_points_spin.setValue(
+            settings.value("integration_points", 4857, type=int)
+        )
+        self.azimuth_points_spin.setValue(
+            settings.value("azimuth_points", 360, type=int)
+        )
         self.export_xy_cb.setChecked(settings.value("export_xy", False, type=bool))
         self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
@@ -417,6 +428,8 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("cal_file", self.cal_file_edit.text())
         settings.setValue("mask_file", self.mask_file_edit.text())
         settings.setValue("watch_dir", self.watch_dir_edit.text())
+        settings.setValue("integration_points", self.integration_points_spin.value())
+        settings.setValue("azimuth_points", self.azimuth_points_spin.value())
         settings.setValue("export_xy", self.export_xy_cb.isChecked())
         settings.setValue("export_dat", self.export_dat_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
@@ -504,6 +517,12 @@ class DioptasBatchGUI(QMainWindow):
                 cake_azimuth_points=self.azimuth_points_spin.value(),
                 overwrite=self.overwrite_cb.isChecked()
             )
+            self._append_log(
+                "Requested integration settings: "
+                f"radial={self.integration_points_spin.value()}, "
+                f"azimuth={self.azimuth_points_spin.value()}, "
+                f"overwrite={self.overwrite_cb.isChecked()}"
+            )
             
             # Group selected files
             file_groups = self.processor.group_lambda_files(self.selected_files)
@@ -559,6 +578,12 @@ class DioptasBatchGUI(QMainWindow):
                 num_points=self.integration_points_spin.value(),
                 cake_azimuth_points=self.azimuth_points_spin.value(),
                 overwrite=self.overwrite_cb.isChecked()
+            )
+            self._append_log(
+                "Requested integration settings: "
+                f"radial={self.integration_points_spin.value()}, "
+                f"azimuth={self.azimuth_points_spin.value()}, "
+                f"overwrite={self.overwrite_cb.isChecked()}"
             )
             self.current_mode = "watch"
             self.requested_input_files = 0
