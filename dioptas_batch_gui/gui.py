@@ -328,11 +328,15 @@ class DioptasBatchGUI(QMainWindow):
         file_select_layout = QHBoxLayout()
         self.select_files_btn = QPushButton("Select Files...")
         self.select_files_btn.clicked.connect(self._select_files)
-        self.select_files_btn.setStyleSheet("QPushButton { padding: 8px; }")
-        file_select_layout.addWidget(self.select_files_btn)
-        
         self.clear_selection_btn = QPushButton("Clear Selection")
         self.clear_selection_btn.clicked.connect(self._clear_selection)
+
+        self.select_files_btn.setStyleSheet(
+            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }"
+        )
+        self.select_files_btn.setFixedHeight(self.clear_selection_btn.sizeHint().height())
+
+        file_select_layout.addWidget(self.select_files_btn)
         file_select_layout.addWidget(self.clear_selection_btn)
         
         file_select_layout.addStretch()
@@ -349,7 +353,7 @@ class DioptasBatchGUI(QMainWindow):
         # Process button for batch mode
         self.process_batch_btn = QPushButton("Process Selected Files")
         self.process_batch_btn.clicked.connect(self._process_batch)
-        self.process_batch_btn.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; padding: 10px; }")
+        self.process_batch_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }")
         self.process_batch_btn.setEnabled(False)
         layout.addWidget(self.process_batch_btn)
         

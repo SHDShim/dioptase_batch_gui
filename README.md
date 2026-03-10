@@ -74,7 +74,11 @@ pip install --upgrade dioptas-batch-gui
 pip install --upgrade --force-reinstall dioptas-batch-gui
 ```
 
+## Verify Dependencies
 
+```bash
+python check_dependencies.py
+```
 
 ## Usage
 
@@ -101,6 +105,23 @@ or
 dioptas-batch-gui
 ```
 
+For a local checkout, you can also launch the app directly:
+
+```bash
+python -m dioptas_batch_gui
+```
+
+## Basic Workflow
+
+1. Set **Watch Directory** or switch to **Batch Mode** and select files manually.
+2. Set **Output Directory**.
+3. Select the **Calibration File** (`.poni`).
+4. Optionally select a **Mask File**.
+5. Configure integration points and azimuth bins.
+6. Choose the export options you want.
+7. Click **Start Watching** for automatic mode or **Process Selected Files** for manual batch mode.
+8. Click **Stop Watching** when finished with auto-processing.
+
 ## Output
 
 For each processed dataset, the app exports:
@@ -109,6 +130,18 @@ For each processed dataset, the app exports:
 - `<base_name>-param/<base_name>.int.cake.npy`
 - `<base_name>-param/<base_name>.tth.cake.npy`
 - `<base_name>-param/<base_name>.azi.cake.npy`
+
+Output layout:
+
+```text
+output_directory/
+├── <base_name>.chi
+└── <base_name>-param/
+    ├── <base_name>.int.cake.npy
+    ├── <base_name>.tth.cake.npy
+    ├── <base_name>.azi.cake.npy
+    └── <calibration>.poni
+```
 
 ## License
 
