@@ -304,19 +304,54 @@ class DioptasBatchGUI(QMainWindow):
         
         # Control buttons for watch mode
         control_layout = QHBoxLayout()
-        self.start_watch_btn = QPushButton("Start Watching")
-        self.start_watch_btn.clicked.connect(self._start_watching)
-        self.start_watch_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 8px; }")
-        control_layout.addWidget(self.start_watch_btn)
-        
-        self.stop_watch_btn = QPushButton("Stop Watching")
-        self.stop_watch_btn.clicked.connect(self._stop_watching)
-        self.stop_watch_btn.setEnabled(False)
-        self.stop_watch_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 8px; }")
-        control_layout.addWidget(self.stop_watch_btn)
+        self.watch_toggle_btn = QPushButton("Start Watching")
+        self.watch_toggle_btn.setCheckable(True)
+        self.watch_toggle_btn.clicked.connect(self._toggle_watching)
+        self.watch_toggle_btn.setStyleSheet(self._watch_toggle_stylesheet())
+        control_layout.addWidget(self.watch_toggle_btn)
         
         layout.addLayout(control_layout)
         layout.addStretch()
+
+    def _watch_toggle_stylesheet(self):
+        """Return stylesheet for the watch toggle button."""
+        return (
+            "QPushButton {"
+            " background-color: #4CAF50;"
+            " border: 2px solid #388E3C;"
+            " border-radius: 4px;"
+            " color: white;"
+            " font-weight: bold;"
+            " padding: 8px 14px;"
+            "}"
+            "QPushButton:pressed {"
+            " padding-top: 9px;"
+            " padding-left: 15px;"
+            "}"
+            "QPushButton:checked {"
+            " background-color: #f44336;"
+            " border: 2px inset #B71C1C;"
+            " padding-top: 9px;"
+            " padding-left: 15px;"
+            "}"
+            "QPushButton:checked:pressed {"
+            " background-color: #d73a2f;"
+            "}"
+        )
+
+    def _set_watch_toggle_state(self, is_watching):
+        """Update toggle button label and checked state."""
+        self.watch_toggle_btn.blockSignals(True)
+        self.watch_toggle_btn.setChecked(is_watching)
+        self.watch_toggle_btn.setText("Stop Watching" if is_watching else "Start Watching")
+        self.watch_toggle_btn.blockSignals(False)
+
+    def _toggle_watching(self, checked):
+        """Toggle folder watching from the single watch button."""
+        if checked:
+            self._start_watching()
+        else:
+            self._stop_watching()
         
     def _create_batch_mode_ui(self, layout):
         """Create UI for batch mode."""
@@ -568,6 +603,7 @@ class DioptasBatchGUI(QMainWindow):
     def _start_watching(self):
         """Start file watching and auto-processing."""
         if not self._validate_config(check_watch_dir=True):
+            self._set_watch_toggle_state(False)
             return
 
         self._save_settings()
@@ -623,14 +659,14 @@ class DioptasBatchGUI(QMainWindow):
             self.check_timer.start(1000)  # Check every second
             
             # Update UI
-            self.start_watch_btn.setEnabled(False)
-            self.stop_watch_btn.setEnabled(True)
+            self._set_watch_toggle_state(True)
             self.status_label.setText("Status: Watching for files...")
             self.status_label.setStyleSheet("color: green;")
             
             self._append_log("=== Auto-processing started ===")
             
         except Exception as e:
+            self._set_watch_toggle_state(False)
             QMessageBox.critical(self, "Error", f"Failed to start: {str(e)}")
             logging.error(f"Failed to start: {e}")
             
@@ -643,8 +679,7 @@ class DioptasBatchGUI(QMainWindow):
         self.check_timer.stop()
         
         # Update UI
-        self.start_watch_btn.setEnabled(True)
-        self.stop_watch_btn.setEnabled(False)
+        self._set_watch_toggle_state(False)
         self.status_label.setText("Status: Stopped")
         self.status_label.setStyleSheet("color: gray;")
         
