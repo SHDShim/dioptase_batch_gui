@@ -1,6 +1,6 @@
 """Single source of truth for package version."""
 
-__version__ = "0.0.5"
+__version__ = "0.0.6"
 
 """
 0.0.5 fix resolution of cake along theta axis.  it is adjusted to show twice more in cake than chi for twotheta

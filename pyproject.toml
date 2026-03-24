@@ -46,6 +46,9 @@ include-package-data = true
 where = ["."]
 include = ["dioptas_batch_gui*"]
 
+[tool.setuptools.package-data]
+dioptas_batch_gui = ["assets/*.ico", "assets/*.icns"]
+
 [tool.setuptools.dynamic]
 version = { attr = "dioptas_batch_gui.version.__version__" }
 

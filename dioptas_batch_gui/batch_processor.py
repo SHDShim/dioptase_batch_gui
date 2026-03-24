@@ -10,7 +10,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from glob import glob
-from typing import List, Tuple, Optional
+from typing import Callable, List, Tuple, Optional
 import h5py
 
 # Dioptas imports
@@ -71,12 +71,12 @@ class BatchProcessor:
         logger.info("Batch processor initialized")
         logger.info(f"Calibration: {calibration_file}")
         logger.info(f"Output: {output_directory}")
-        logger.info(f"Integration points: {num_points}")
-        logger.info(f"CAKE radial points: {self._cake_radial_points()}")
+        logger.info("Integration points: automatic (estimated per loaded image)")
+        logger.info("CAKE radial points: automatic (matches the estimated 1D points)")
 
     def _cake_radial_points(self) -> int:
-        """CAKE radial bins are defined as 2x the 1D integration points."""
-        return int(self.num_points) * 2
+        """CAKE radial bins match the 1D integration point count."""
+        return int(self.num_points)
 
     def _set_config_attrs(self, candidates: List[str], value, label: str) -> List[str]:
         """
@@ -183,6 +183,40 @@ class BatchProcessor:
             self.cake_azimuth_points,
             "azimuth bins",
         )
+
+    def _load_image_into_config(self, file_set: List[str], image_index: int):
+        """Load an image into the Dioptas config for estimation/integration."""
+        if len(file_set) == 3:
+            lambda_loader = LambdaLoader.LambdaImage(file_list=file_set)
+            img_data = lambda_loader.get_image(image_index)
+            self.config.img_model.blockSignals(True)
+            self.config.img_model.img_data = img_data
+            self.config.img_model.blockSignals(False)
+            return
+
+        self.config.img_model.blockSignals(True)
+        self.config.img_model.load(file_set[0], image_index)
+        self.config.img_model.blockSignals(False)
+
+    def estimate_integration_points(self) -> int:
+        """
+        Ask Dioptas to estimate the recommended 1D radial bin count.
+        This mirrors the internal automatic behavior used when num_points=None.
+        """
+        img_data = getattr(self.config.img_model, "img_data", None)
+        if img_data is None:
+            return int(self.num_points)
+
+        estimated_points = self.config.calibration_model.calculate_number_of_pattern_points(
+            img_data.shape, 2
+        )
+        return max(1, int(estimated_points))
+
+    def update_integration_points(self, num_points: int):
+        """Store and apply a new radial bin count estimate."""
+        self.num_points = int(num_points)
+        self._apply_integration_settings()
+        logger.info(f"Estimated integration points from image: {self.num_points}")
         
     def _load_calibration(self):
         """Load calibration file."""
@@ -323,7 +357,8 @@ class BatchProcessor:
                             export_dat: bool = False,
                             export_cake_npy: bool = True,
                             apply_mask_to_chi: bool = True,
-                            apply_mask_to_cake: bool = False) -> dict:
+                            apply_mask_to_cake: bool = False,
+                            estimate_callback: Optional[Callable[[int], None]] = None) -> dict:
         """
         Process a single detector image.
         Handles both multi-module Lambda files and single HDF5 files.
@@ -352,80 +387,72 @@ class BatchProcessor:
             'skipped': False,
         }
         paths = self._build_output_paths(base_output_name)
+        chi_exists = paths["chi_path"].exists()
+        xy_exists = paths["xy_path"].exists()
+        dat_exists = paths["dat_path"].exists()
+        cake_int_exists = paths["int_path"].exists()
+        cake_tth_exists = paths["tth_path"].exists()
+        cake_azi_exists = paths["azi_path"].exists()
+        cake_files_exist = cake_int_exists and cake_tth_exists and cake_azi_exists
         
         try:
-            # Fast path: skip opening HDF5/integration when all selected outputs already exist.
-            chi_exists = paths["chi_path"].exists()
-            xy_exists = paths["xy_path"].exists()
-            dat_exists = paths["dat_path"].exists()
-            cake_files_exist = (
-                paths["int_path"].exists()
-                and paths["tth_path"].exists()
-                and paths["azi_path"].exists()
-            )
+            # Respect "overwrite existing files" before doing any image-loading or integration work.
+            if not self.overwrite:
+                chi_ready = (not export_chi) or chi_exists
+                xy_ready = (not export_xy) or xy_exists
+                dat_ready = (not export_dat) or dat_exists
+                cake_ready = (not export_cake_npy) or cake_files_exist
+
+                if chi_ready and xy_ready and dat_ready and cake_ready:
+                    existing_dims = self._get_existing_cake_dims(paths) if export_cake_npy else None
+                    if export_chi:
+                        results['chi_file'] = str(paths["chi_path"])
+                    if export_xy:
+                        results['xy_file'] = str(paths["xy_path"])
+                    if export_dat:
+                        results['dat_file'] = str(paths["dat_path"])
+                    if export_cake_npy:
+                        results['npy_files'] = [
+                            str(paths["int_path"]),
+                            str(paths["tth_path"]),
+                            str(paths["azi_path"]),
+                        ]
+                        results['npy_file'] = str(paths["int_path"])
+                        paths["cake_folder"].mkdir(parents=True, exist_ok=True)
+                        if not paths["poni_dest"].exists():
+                            try:
+                                import shutil
+                                shutil.copy2(self.calibration_file, paths["poni_dest"])
+                                logger.debug(f"Copied poni file to {paths['cake_folder']}")
+                            except Exception as e:
+                                logger.warning(f"Failed to copy poni file: {e}")
+
+                    logger.info(
+                        f"Skipping image {image_index}: outputs already exist for {base_output_name}"
+                    )
+                    if existing_dims is not None:
+                        logger.info(
+                            "Using existing CAKE files with bins: "
+                            f"intensity_shape={existing_dims[0]}, tth={existing_dims[1]}, azi={existing_dims[2]}"
+                        )
+                    results['success'] = True
+                    results['skipped'] = True
+                    return results
+
+            self._load_image_into_config(file_set, image_index)
+            estimated_points = self.estimate_integration_points()
+            self.update_integration_points(estimated_points)
+            if estimate_callback:
+                estimate_callback(estimated_points)
+
             cake_exists = cake_files_exist and self._cake_matches_requested_resolution(paths)
-            chi_ready = (not export_chi) or chi_exists
-            xy_ready = (not export_xy) or xy_exists
-            dat_ready = (not export_dat) or dat_exists
-            cake_ready = (not export_cake_npy) or cake_exists
             need_chi_processing = export_chi and (self.overwrite or not chi_exists)
             need_xy_processing = export_xy and (self.overwrite or not xy_exists)
             need_dat_processing = export_dat and (self.overwrite or not dat_exists)
-            need_cake_processing = export_cake_npy and (self.overwrite or not cake_exists)
+            need_cake_processing = export_cake_npy and (
+                self.overwrite or not (cake_int_exists and cake_tth_exists and cake_azi_exists)
+            )
             need_1d_processing = need_chi_processing or need_xy_processing or need_dat_processing
-
-            if not self.overwrite and chi_ready and xy_ready and dat_ready and cake_ready:
-                existing_dims = self._get_existing_cake_dims(paths) if export_cake_npy else None
-                if export_chi:
-                    results['chi_file'] = str(paths["chi_path"])
-                if export_xy:
-                    results['xy_file'] = str(paths["xy_path"])
-                if export_dat:
-                    results['dat_file'] = str(paths["dat_path"])
-                if export_cake_npy:
-                    results['npy_files'] = [
-                        str(paths["int_path"]),
-                        str(paths["tth_path"]),
-                        str(paths["azi_path"]),
-                    ]
-                    results['npy_file'] = str(paths["int_path"])
-                    paths["cake_folder"].mkdir(parents=True, exist_ok=True)
-                    if not paths["poni_dest"].exists():
-                        try:
-                            import shutil
-                            shutil.copy2(self.calibration_file, paths["poni_dest"])
-                            logger.debug(f"Copied poni file to {paths['cake_folder']}")
-                        except Exception as e:
-                            logger.warning(f"Failed to copy poni file: {e}")
-
-                logger.info(
-                    f"Skipping image {image_index}: outputs already exist for {base_output_name}"
-                )
-                if existing_dims is not None:
-                    logger.info(
-                        "Using existing CAKE files with bins: "
-                        f"intensity_shape={existing_dims[0]}, tth={existing_dims[1]}, azi={existing_dims[2]} "
-                        f"(requested tth={self._cake_radial_points()}, azi={self.cake_azimuth_points})"
-                    )
-                results['success'] = True
-                results['skipped'] = True
-                return results
-
-            # Check if this is a multi-module Lambda file or single file
-            if len(file_set) == 3:
-                # Multi-module Lambda detector
-                lambda_loader = LambdaLoader.LambdaImage(file_list=file_set)
-                img_data = lambda_loader.get_image(image_index)
-                
-                # Load image into Dioptas
-                self.config.img_model.blockSignals(True)
-                self.config.img_model.img_data = img_data
-                self.config.img_model.blockSignals(False)
-            else:
-                # Single HDF5 file - Dioptas' load method handles everything
-                self.config.img_model.blockSignals(True)
-                self.config.img_model.load(file_set[0], image_index)
-                self.config.img_model.blockSignals(False)
 
             if self._mask_available and (
                 (need_1d_processing and apply_mask_to_chi)
@@ -433,7 +460,7 @@ class BatchProcessor:
             ):
                 self._ensure_mask_loaded_for_current_image()
 
-            # Re-apply integration settings in case Dioptas resets them on load.
+            # Re-apply settings in case Dioptas resets them on image load.
             if need_1d_processing or need_cake_processing:
                 self._apply_integration_settings()
             
@@ -559,9 +586,12 @@ class BatchProcessor:
                         f"intensity_shape={actual_shape}, tth={actual_tth_len}, azi={actual_azi_len}"
                     )
 
-                    np.save(str(int_path), intensity_cake)
-                    np.save(str(tth_path), tth_cake)
-                    np.save(str(azi_path), chi_cake)
+                    if self.overwrite or not cake_int_exists:
+                        np.save(str(int_path), intensity_cake)
+                    if self.overwrite or not cake_tth_exists:
+                        np.save(str(tth_path), tth_cake)
+                    if self.overwrite or not cake_azi_exists:
+                        np.save(str(azi_path), chi_cake)
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
                     results['npy_file'] = str(int_path)
                     logger.info(
@@ -585,7 +615,8 @@ class BatchProcessor:
                         export_cake_npy: bool = True,
                         apply_mask_to_chi: bool = True,
                         apply_mask_to_cake: bool = False,
-                        progress_callback=None) -> dict:
+                        progress_callback=None,
+                        estimate_callback: Optional[Callable[[int], None]] = None) -> dict:
         """
         Process all images in a Lambda file set.
         
@@ -642,6 +673,7 @@ class BatchProcessor:
                 export_cake_npy,
                 apply_mask_to_chi,
                 apply_mask_to_cake,
+                estimate_callback=estimate_callback,
             )
             
             if results['success']:

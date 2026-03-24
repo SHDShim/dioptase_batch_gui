@@ -7,19 +7,38 @@ Main application for automated batch processing with folder watching.
 import sys
 import os
 import logging
+import re
+from datetime import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QLineEdit, QPushButton, QFileDialog, QTextEdit,
-    QCheckBox, QSpinBox, QGroupBox, QProgressBar, QMessageBox,
-    QTabWidget, QListWidget
+    QCheckBox, QGroupBox, QProgressBar, QMessageBox, QRadioButton,
+    QTabWidget, QSizePolicy, QTableWidget, QTableWidgetItem, QAbstractItemView,
+    QGridLayout,
+    QHeaderView
 )
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSettings
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSettings, Qt
+from PyQt6.QtGui import QFont, QIcon, QFontMetrics
 
 from .file_watcher import FileWatcher
 from .batch_processor import BatchProcessor
 from .version import __version__
+
+FIXED_AZIMUTH_BINS = 360
+
+
+def load_app_icon():
+    """Return the packaged application icon, preferring platform-native formats."""
+    assets_dir = Path(__file__).resolve().parent / "assets"
+    icon = QIcon()
+
+    for icon_name in ("dbg.icns", "dbg.ico"):
+        icon_path = assets_dir / icon_name
+        if icon_path.exists():
+            icon.addFile(str(icon_path))
+
+    return icon
 
 
 class ProcessingThread(QThread):
@@ -27,6 +46,7 @@ class ProcessingThread(QThread):
     progress = pyqtSignal(int, int, str)  # current, total, message
     finished = pyqtSignal(dict)  # statistics
     error = pyqtSignal(str)
+    integration_points_estimated = pyqtSignal(int)
     
     def __init__(
         self,
@@ -60,7 +80,8 @@ class ProcessingThread(QThread):
                 self.export_cake,
                 self.apply_mask_to_chi,
                 self.apply_mask_to_cake,
-                progress_callback=self._progress_callback
+                progress_callback=self._progress_callback,
+                estimate_callback=self._estimate_callback,
             )
             self.finished.emit(stats)
         except Exception as e:
@@ -70,6 +91,10 @@ class ProcessingThread(QThread):
         """Forward progress updates to GUI."""
         self.progress.emit(current, total, message)
 
+    def _estimate_callback(self, num_points):
+        """Forward integration-point estimates to the GUI."""
+        self.integration_points_estimated.emit(int(num_points))
+
 
 class DioptasBatchGUI(QMainWindow):
     """Main GUI window for Dioptas batch processing."""
@@ -77,8 +102,9 @@ class DioptasBatchGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"Dioptas Batch Processor v{__version__}")
-        self.setGeometry(100, 100, 570, 750)
+        self.setWindowTitle(f"Dioptas Bach GUI v{__version__}")
+        self.setGeometry(100, 100, 1500, 900)
+        self._set_window_icon()
         
         # Initialize variables
         self.file_watcher = None
@@ -87,7 +113,11 @@ class DioptasBatchGUI(QMainWindow):
         self.pending_files = []
         self.selected_files = []
         self.current_file_set = []
-        self.current_mode = "idle"  # idle | batch | watch
+        self.current_mode = "idle"  # idle | batch | sequence | watch
+        self.sequence_file_path = None
+        self.sequence_digits = 0
+        self.sequence_index = None
+        self.file_history_records = []
         self.requested_input_files = 0
         self.requested_file_sets = 0
         self.completed_file_sets = 0
@@ -108,6 +138,12 @@ class DioptasBatchGUI(QMainWindow):
         self._append_log(
             f"Runtime: v{__version__} | gui={Path(__file__).resolve()}"
         )
+
+    def _set_window_icon(self):
+        """Load the packaged application icon when available."""
+        icon = load_app_icon()
+        if not icon.isNull():
+            self.setWindowIcon(icon)
         
     def _setup_logging(self):
         """Setup logging to GUI console."""
@@ -130,7 +166,11 @@ class DioptasBatchGUI(QMainWindow):
         """Create the user interface."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+        left_layout = QVBoxLayout()
+        right_layout = QVBoxLayout()
+        main_layout.addLayout(left_layout, 3)
+        main_layout.addLayout(right_layout, 4)
 
         # Top header with version
         # header_label = QLabel(f"Dioptas Batch Processor v{__version__}")
@@ -139,6 +179,10 @@ class DioptasBatchGUI(QMainWindow):
         
         # Mode selector tabs
         self.mode_tabs = QTabWidget()
+        self.mode_tabs.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         
         # Batch Mode Tab
         batch_tab = QWidget()
@@ -146,21 +190,30 @@ class DioptasBatchGUI(QMainWindow):
         self._create_batch_mode_ui(batch_layout)
         self.mode_tabs.addTab(batch_tab, "Batch Mode (Manual)")
 
+        # Sequence Mode Tab
+        sequence_tab = QWidget()
+        sequence_layout = QVBoxLayout(sequence_tab)
+        self._create_sequence_mode_ui(sequence_layout)
+        self.mode_tabs.addTab(sequence_tab, "Sequence Mode (Manual)")
+
         # Watch Mode Tab
         watch_tab = QWidget()
         watch_layout = QVBoxLayout(watch_tab)
         self._create_watch_mode_ui(watch_layout)
         self.mode_tabs.addTab(watch_tab, "Watch Mode (Auto)")
         
-        main_layout.addWidget(self.mode_tabs)
+        left_layout.addWidget(self.mode_tabs)
+        left_layout.addStretch(1)
         
         # Shared configuration section
         config_group = QGroupBox("Processing Configuration")
         config_layout = QVBoxLayout()
         
         # Output directory
+        output_label = QLabel("Output Directory:")
+        output_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        config_layout.addWidget(output_label)
         output_layout = QHBoxLayout()
-        output_layout.addWidget(QLabel("Output Directory:"))
         self.output_dir_edit = QLineEdit()
         output_layout.addWidget(self.output_dir_edit)
         self.output_dir_btn = QPushButton("Browse...")
@@ -169,8 +222,10 @@ class DioptasBatchGUI(QMainWindow):
         config_layout.addLayout(output_layout)
         
         # Calibration file
+        cal_label = QLabel("Calibration File (.poni):")
+        cal_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        config_layout.addWidget(cal_label)
         cal_layout = QHBoxLayout()
-        cal_layout.addWidget(QLabel("Calibration File (.poni):"))
         self.cal_file_edit = QLineEdit()
         cal_layout.addWidget(self.cal_file_edit)
         self.cal_file_btn = QPushButton("Browse...")
@@ -179,8 +234,10 @@ class DioptasBatchGUI(QMainWindow):
         config_layout.addLayout(cal_layout)
         
         # Mask file (optional)
+        mask_label = QLabel("Mask File (optional):")
+        mask_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        config_layout.addWidget(mask_label)
         mask_layout = QHBoxLayout()
-        mask_layout.addWidget(QLabel("Mask File (optional):"))
         self.mask_file_edit = QLineEdit()
         mask_layout.addWidget(self.mask_file_edit)
         self.mask_file_btn = QPushButton("Browse...")
@@ -189,66 +246,83 @@ class DioptasBatchGUI(QMainWindow):
         config_layout.addLayout(mask_layout)
         
         config_group.setLayout(config_layout)
-        main_layout.addWidget(config_group)
+        left_layout.addWidget(config_group)
+        left_layout.addStretch(1)
         
         # Processing Options
         options_group = QGroupBox("Processing Options")
         options_layout = QVBoxLayout()
         
-        # Integration controls (side by side)
-        integration_layout = QHBoxLayout()
-        integration_layout.addWidget(QLabel("Integration Points (1D):"))
-        self.integration_points_spin = QSpinBox()
-        self.integration_points_spin.setRange(500, 10000)
-        self.integration_points_spin.setValue(4857)
-        self.integration_points_spin.setSingleStep(100)
-        integration_layout.addWidget(self.integration_points_spin)
-        integration_layout.addSpacing(20)
-        integration_layout.addWidget(QLabel("Azimuth Bins (2D):"))
-        self.azimuth_points_spin = QSpinBox()
-        self.azimuth_points_spin.setRange(100, 2000)
-        self.azimuth_points_spin.setValue(360)
-        self.azimuth_points_spin.setSingleStep(10)
-        integration_layout.addWidget(self.azimuth_points_spin)
-        integration_layout.addStretch()
-        options_layout.addLayout(integration_layout)
+        # Integration controls
+        integration_grid = QGridLayout()
+        integration_grid.setHorizontalSpacing(12)
+        integration_grid.setVerticalSpacing(8)
+
+        integration_label = QLabel("Integration Points (1D):")
+        integration_grid.addWidget(integration_label, 0, 0)
+        self.integration_points_edit = QLineEdit("Auto")
+        self.integration_points_edit.setReadOnly(True)
+        self.integration_points_edit.setFixedWidth(110)
+        self.integration_points_edit.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.integration_points_edit.setToolTip(
+            "Updated automatically from the loaded image using Dioptas."
+        )
+        integration_grid.addWidget(self.integration_points_edit, 0, 1)
+
+        azimuth_label = QLabel("Azimuth Bins (2D):")
+        integration_grid.addWidget(azimuth_label, 1, 0)
+        self.azimuth_points_edit = QLineEdit(str(FIXED_AZIMUTH_BINS))
+        self.azimuth_points_edit.setReadOnly(True)
+        self.azimuth_points_edit.setFixedWidth(110)
+        self.azimuth_points_edit.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.azimuth_points_edit.setToolTip("Fixed at 360 bins.")
+        integration_grid.addWidget(self.azimuth_points_edit, 1, 1)
+        integration_grid.setColumnStretch(2, 1)
+        options_layout.addLayout(integration_grid)
         
-        # Export options
-        export_layout = QHBoxLayout()
-        self.export_chi_cb = QCheckBox("Export CHI files (1D patterns)")
+        checkbox_grid = QGridLayout()
+        checkbox_grid.setHorizontalSpacing(24)
+        checkbox_grid.setVerticalSpacing(8)
+
+        self.export_chi_cb = QCheckBox("Export CHI files")
         self.export_chi_cb.setChecked(True)
-        export_layout.addWidget(self.export_chi_cb)
+        checkbox_grid.addWidget(self.export_chi_cb, 0, 0)
 
-        self.export_xy_cb = QCheckBox("Export XY files (1D patterns)")
+        self.export_xy_cb = QCheckBox("Export XY files")
         self.export_xy_cb.setChecked(False)
-        export_layout.addWidget(self.export_xy_cb)
+        checkbox_grid.addWidget(self.export_xy_cb, 0, 1)
 
-        self.export_dat_cb = QCheckBox("Export DAT files (1D patterns)")
+        self.export_dat_cb = QCheckBox("Export DAT files")
         self.export_dat_cb.setChecked(False)
-        export_layout.addWidget(self.export_dat_cb)
+        checkbox_grid.addWidget(self.export_dat_cb, 1, 0)
         
-        self.export_npy_cb = QCheckBox("Export NPY files (2D cakes)")
+        self.export_npy_cb = QCheckBox("Export NPY files")
         self.export_npy_cb.setChecked(True)
-        export_layout.addWidget(self.export_npy_cb)
-        options_layout.addLayout(export_layout)
+        checkbox_grid.addWidget(self.export_npy_cb, 1, 1)
 
-        # Mask application options
-        mask_apply_layout = QHBoxLayout()
-        self.apply_mask_to_chi_cb = QCheckBox("Apply mask to CHI (1D)")
+        self.apply_mask_to_chi_cb = QCheckBox("Apply mask to CHI")
         self.apply_mask_to_chi_cb.setChecked(True)
-        mask_apply_layout.addWidget(self.apply_mask_to_chi_cb)
+        checkbox_grid.addWidget(self.apply_mask_to_chi_cb, 2, 0)
 
-        self.apply_mask_to_cake_cb = QCheckBox("Apply mask to cake (2D)")
+        self.apply_mask_to_cake_cb = QCheckBox("Apply mask to cake")
         self.apply_mask_to_cake_cb.setChecked(False)
-        mask_apply_layout.addWidget(self.apply_mask_to_cake_cb)
+        checkbox_grid.addWidget(self.apply_mask_to_cake_cb, 2, 1)
+        options_layout.addLayout(checkbox_grid)
+
+        overwrite_layout = QHBoxLayout()
         self.overwrite_cb = QCheckBox("Overwrite existing files")
         self.overwrite_cb.setChecked(False)
-        mask_apply_layout.addWidget(self.overwrite_cb)
-        mask_apply_layout.addStretch()
-        options_layout.addLayout(mask_apply_layout)
+        overwrite_layout.addWidget(self.overwrite_cb)
+        overwrite_layout.addStretch()
+        options_layout.addLayout(overwrite_layout)
         
         options_group.setLayout(options_layout)
-        main_layout.addWidget(options_group)
+        left_layout.addWidget(options_group)
+        left_layout.addStretch(1)
         
         # Progress section
         progress_group = QGroupBox("Progress")
@@ -265,7 +339,28 @@ class DioptasBatchGUI(QMainWindow):
         progress_layout.addWidget(self.stats_label)
         
         progress_group.setLayout(progress_layout)
-        main_layout.addWidget(progress_group)
+        left_layout.addWidget(progress_group)
+        left_layout.addStretch(1)
+
+        file_list_group = QGroupBox("File List")
+        file_list_layout = QVBoxLayout()
+
+        self.file_list_table = QTableWidget(0, 2)
+        self.file_list_table.setHorizontalHeaderLabels(["File", "Processed"])
+        self.file_list_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.file_list_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.file_list_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.file_list_table.verticalHeader().setVisible(False)
+        self.file_list_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.file_list_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_list_table.verticalHeader().setDefaultSectionSize(28)
+        self.file_list_table.setMinimumHeight(280)
+        self.file_list_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.file_list_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        file_list_layout.addWidget(self.file_list_table)
+
+        file_list_group.setLayout(file_list_layout)
+        right_layout.addWidget(file_list_group, 3)
         
         # Log console
         log_group = QGroupBox("Processing Log")
@@ -274,6 +369,8 @@ class DioptasBatchGUI(QMainWindow):
         self.log_console = QTextEdit()
         self.log_console.setReadOnly(True)
         self.log_console.setMinimumHeight(150)
+        self.log_console.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.log_console.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.log_console.setStyleSheet(
             "background-color: #f5f5f5; color: #000000; font-family: Menlo, Monaco, 'Courier New';"
         )
@@ -284,14 +381,10 @@ class DioptasBatchGUI(QMainWindow):
         log_layout.addWidget(clear_btn)
         
         log_group.setLayout(log_layout)
-        main_layout.addWidget(log_group)
+        right_layout.addWidget(log_group, 2)
         
     def _create_watch_mode_ui(self, layout):
         """Create UI for watch mode."""
-        info_label = QLabel("Monitor a folder and automatically process new files as they appear.")
-        info_label.setStyleSheet("color: #666; font-style: italic;")
-        layout.addWidget(info_label)
-        
         # Watch directory
         watch_layout = QHBoxLayout()
         watch_layout.addWidget(QLabel("Watch Directory:"))
@@ -352,13 +445,59 @@ class DioptasBatchGUI(QMainWindow):
             self._start_watching()
         else:
             self._stop_watching()
+
+    def _create_sequence_mode_ui(self, layout):
+        """Create UI for manually stepping through a numbered file sequence."""
+        select_layout = QHBoxLayout()
+        select_layout.setSpacing(12)
+        self.sequence_select_btn = QPushButton("Select File ...")
+        self.sequence_select_btn.clicked.connect(self._select_sequence_file)
+        self.sequence_select_btn.setStyleSheet(
+            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }"
+        )
+        self.sequence_process_btn = QPushButton("Process Current File")
+        self.sequence_process_btn.clicked.connect(self._process_current_sequence_file)
+        self.sequence_process_btn.hide()
+        select_layout.addWidget(self.sequence_select_btn)
+        self.sequence_prev_btn = QPushButton("<")
+        self.sequence_prev_btn.clicked.connect(lambda: self._step_sequence(-1))
+        self.sequence_prev_btn.setStyleSheet(
+            "QPushButton { background-color: #f44336; color: white; font-weight: bold; }"
+        )
+        self.sequence_prev_btn.setEnabled(False)
+        select_layout.addWidget(self.sequence_prev_btn)
+
+        self.sequence_next_btn = QPushButton(">")
+        self.sequence_next_btn.clicked.connect(lambda: self._step_sequence(1))
+        self.sequence_next_btn.setStyleSheet(
+            "QPushButton { background-color: #f44336; color: white; font-weight: bold; }"
+        )
+        self.sequence_next_btn.setEnabled(False)
+        select_layout.addWidget(self.sequence_next_btn)
+        sequence_button_height = max(
+            self.sequence_select_btn.sizeHint().height(),
+            self.sequence_prev_btn.sizeHint().height(),
+            self.sequence_next_btn.sizeHint().height(),
+            46,
+        )
+        self.sequence_select_btn.setFixedHeight(sequence_button_height)
+        self.sequence_prev_btn.setFixedHeight(sequence_button_height)
+        self.sequence_next_btn.setFixedHeight(sequence_button_height)
+
+        self.sequence_nav_name_rb = QRadioButton("Name")
+        self.sequence_nav_name_rb.setChecked(True)
+        select_layout.addWidget(self.sequence_nav_name_rb)
+        self.sequence_nav_time_rb = QRadioButton("Time")
+        select_layout.addWidget(self.sequence_nav_time_rb)
+        select_layout.addStretch()
+        layout.addLayout(select_layout)
+        layout.addStretch()
         
     def _create_batch_mode_ui(self, layout):
         """Create UI for batch mode."""
-        info_label = QLabel("Select specific files to process immediately without folder watching.")
-        info_label.setStyleSheet("color: #666; font-style: italic;")
-        layout.addWidget(info_label)
-        
+        layout.setContentsMargins(8, 6, 8, 8)
+        layout.setSpacing(8)
+
         # File selection
         file_select_layout = QHBoxLayout()
         self.select_files_btn = QPushButton("Select Files...")
@@ -373,26 +512,24 @@ class DioptasBatchGUI(QMainWindow):
 
         file_select_layout.addWidget(self.select_files_btn)
         file_select_layout.addWidget(self.clear_selection_btn)
+        self.process_batch_btn = QPushButton("Process Selected Files")
+        self.process_batch_btn.clicked.connect(self._process_batch)
+        self.process_batch_btn.setStyleSheet(
+            "QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }"
+        )
+        self.process_batch_btn.setEnabled(False)
+        common_button_height = max(
+            self.select_files_btn.sizeHint().height(),
+            self.clear_selection_btn.sizeHint().height(),
+            self.process_batch_btn.sizeHint().height(),
+        )
+        self.select_files_btn.setFixedHeight(common_button_height)
+        self.clear_selection_btn.setFixedHeight(common_button_height)
+        self.process_batch_btn.setFixedHeight(common_button_height)
+        file_select_layout.addWidget(self.process_batch_btn)
         
         file_select_layout.addStretch()
         layout.addLayout(file_select_layout)
-        
-        # File list
-        list_label = QLabel("Selected Files:")
-        layout.addWidget(list_label)
-        
-        self.file_list_widget = QListWidget()
-        self.file_list_widget.setMaximumHeight(150)
-        layout.addWidget(self.file_list_widget)
-        
-        # Process button for batch mode
-        self.process_batch_btn = QPushButton("Process Selected Files")
-        self.process_batch_btn.clicked.connect(self._process_batch)
-        self.process_batch_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }")
-        self.process_batch_btn.setEnabled(False)
-        layout.addWidget(self.process_batch_btn)
-        
-        layout.addStretch()
         
     def _append_log(self, message):
         """Append message to log console."""
@@ -419,9 +556,7 @@ class DioptasBatchGUI(QMainWindow):
         )
         if file_paths:
             self.selected_files = file_paths
-            self.file_list_widget.clear()
-            for path in file_paths:
-                self.file_list_widget.addItem(Path(path).name)
+            self._set_pending_batch_files(file_paths)
             self.process_batch_btn.setEnabled(len(file_paths) > 0)
             self._append_log(f"Selected {len(file_paths)} files")
             
@@ -438,9 +573,198 @@ class DioptasBatchGUI(QMainWindow):
     def _clear_selection(self):
         """Clear file selection."""
         self.selected_files = []
-        self.file_list_widget.clear()
+        self._clear_pending_batch_files()
         self.process_batch_btn.setEnabled(False)
         self._append_log("File selection cleared")
+
+    def _select_sequence_file(self):
+        """Select one file that represents a manually stepped numbered sequence."""
+        settings = QSettings("Dioptas", "BatchProcessor")
+        last_file_dir = settings.value("last_file_dir", "")
+
+        if not last_file_dir and self.output_dir_edit.text():
+            last_file_dir = self.output_dir_edit.text()
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Sequence File",
+            last_file_dir,
+            "HDF5 Files (*.h5 *.nxs);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        if not self._set_sequence_file(file_path):
+            QMessageBox.warning(
+                self,
+                "Sequence Error",
+                "The selected file name must contain a sequence number, either at the end "
+                "or immediately after 'map'."
+            )
+            return
+
+        file_directory = str(Path(file_path).parent)
+        self.output_dir_edit.setText(file_directory)
+        settings.setValue("last_file_dir", file_directory)
+        self._save_settings()
+        self._append_log(f"Selected sequence file: {Path(file_path).name}")
+        self._add_pending_files([file_path])
+        self._process_current_sequence_file()
+
+    def _set_sequence_file(self, file_path: str) -> bool:
+        """Store sequence metadata for a numbered file path."""
+        path = Path(file_path)
+        match = re.search(r"map[_-]*(\d+)", path.stem, re.IGNORECASE)
+        if not match:
+            match = re.search(r"(\d+)$", path.stem)
+        if not match:
+            return False
+
+        self.sequence_file_path = path
+        self.sequence_digits = len(match.group(1))
+        self.sequence_index = int(match.group(1))
+        self._update_sequence_controls()
+        return True
+
+    def _update_sequence_controls(self):
+        """Refresh sequence UI from the current file selection."""
+        if self.sequence_file_path is None or self.sequence_index is None:
+            self.sequence_prev_btn.setEnabled(False)
+            self.sequence_next_btn.setEnabled(False)
+            return
+
+        is_busy = self.processing_thread is not None
+        self.sequence_prev_btn.setEnabled(not is_busy)
+        self.sequence_next_btn.setEnabled(not is_busy)
+
+    def _sequence_navigation_mode(self) -> str:
+        """Return the active sequence navigation mode."""
+        return "time" if self.sequence_nav_time_rb.isChecked() else "name"
+
+    def _sequence_sort_key(self, path: Path):
+        """Return a name-sorting key that treats map_2 before map_10."""
+        stem_lower = path.stem.lower()
+        map_match = re.search(r"^(.*?map[_-]?)(\d+)(.*)$", stem_lower)
+        if map_match:
+            return (
+                map_match.group(1),
+                int(map_match.group(2)),
+                map_match.group(3),
+                path.suffix.lower(),
+                path.name.lower(),
+            )
+
+        tail_match = re.search(r"^(.*?)(\d+)$", stem_lower)
+        if tail_match:
+            return (
+                tail_match.group(1),
+                int(tail_match.group(2)),
+                "",
+                path.suffix.lower(),
+                path.name.lower(),
+            )
+
+        return (stem_lower, float("inf"), "", path.suffix.lower(), path.name.lower())
+
+    def _sequence_candidate_files(self) -> list[Path]:
+        """Return candidate sequence files from the current directory."""
+        if self.sequence_file_path is None:
+            return []
+
+        suffixes = {".h5", ".nxs"}
+        candidates = [
+            path for path in self.sequence_file_path.parent.iterdir()
+            if path.is_file() and path.suffix.lower() in suffixes
+        ]
+
+        if self._sequence_navigation_mode() == "time":
+            return sorted(candidates, key=lambda path: (path.stat().st_mtime, path.name))
+        return sorted(candidates, key=self._sequence_sort_key)
+
+    def _adjacent_sequence_path(self, delta: int) -> Path | None:
+        """Return the next or previous existing file according to the selected navigation mode."""
+        candidates = self._sequence_candidate_files()
+        if not candidates or self.sequence_file_path not in candidates:
+            return None
+
+        current_idx = candidates.index(self.sequence_file_path)
+        target_idx = current_idx + delta
+        if target_idx < 0 or target_idx >= len(candidates):
+            return None
+        return candidates[target_idx]
+
+    def _step_sequence(self, delta: int):
+        """Move to the previous or next file and process it."""
+        if self.sequence_file_path is None or self.sequence_index is None:
+            return
+        if self.processing_thread is not None:
+            return
+
+        next_path = self._adjacent_sequence_path(delta)
+        if next_path is None:
+            direction = "next" if delta > 0 else "previous"
+            QMessageBox.warning(
+                self,
+                "Sequence Error",
+                f"No {direction} file was found for navigation by {self._sequence_navigation_mode()}."
+            )
+            return
+
+        self._set_sequence_file(str(next_path))
+        self._append_log(f"Moved to sequence file: {next_path.name}")
+        self._add_pending_files([str(next_path)])
+        self._process_current_sequence_file()
+
+    def _process_current_sequence_file(self):
+        """Process the currently selected sequence file."""
+        if self.sequence_file_path is None:
+            QMessageBox.warning(self, "No File", "Please select a sequence file to process.")
+            return
+        if self.processing_thread is not None:
+            return
+        if not self._validate_config(check_watch_dir=False):
+            return
+
+        self._save_settings()
+
+        try:
+            mask_file = self.mask_file_edit.text() if self.mask_file_edit.text() else None
+            self.processor = BatchProcessor(
+                calibration_file=self.cal_file_edit.text(),
+                output_directory=self.output_dir_edit.text(),
+                mask_file=mask_file,
+                num_points=1,
+                cake_azimuth_points=FIXED_AZIMUTH_BINS,
+                overwrite=self.overwrite_cb.isChecked()
+            )
+            self._append_log(
+                "Requested integration settings: "
+                "radial=auto, "
+                f"azimuth={FIXED_AZIMUTH_BINS}, "
+                f"overwrite={self.overwrite_cb.isChecked()}"
+            )
+            self._append_log(f"=== Processing sequence file: {self.sequence_file_path.name} ===")
+
+            self.current_mode = "sequence"
+            self.requested_input_files = 1
+            self.requested_file_sets = 1
+            self.completed_file_sets = 0
+            self.pending_files = [str(self.sequence_file_path)]
+            self._update_sequence_controls()
+            self._update_stats_label()
+            self._process_next_batch()
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to process sequence file:\n{str(e)}\n\nSee log for details."
+            )
+            logging.error(f"Sequence processing error: {e}")
+            logging.error(f"Traceback:\n{error_details}")
+            self._append_log(f"ERROR: {str(e)}")
+            self._update_sequence_controls()
         
     def _load_settings(self):
         """Load saved settings."""
@@ -449,12 +773,6 @@ class DioptasBatchGUI(QMainWindow):
         self.cal_file_edit.setText(settings.value("cal_file", ""))
         self.mask_file_edit.setText(settings.value("mask_file", ""))
         self.watch_dir_edit.setText(settings.value("watch_dir", ""))
-        self.integration_points_spin.setValue(
-            settings.value("integration_points", 4857, type=int)
-        )
-        self.azimuth_points_spin.setValue(
-            settings.value("azimuth_points", 360, type=int)
-        )
         self.export_xy_cb.setChecked(settings.value("export_xy", False, type=bool))
         self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
@@ -467,8 +785,6 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("cal_file", self.cal_file_edit.text())
         settings.setValue("mask_file", self.mask_file_edit.text())
         settings.setValue("watch_dir", self.watch_dir_edit.text())
-        settings.setValue("integration_points", self.integration_points_spin.value())
-        settings.setValue("azimuth_points", self.azimuth_points_spin.value())
         settings.setValue("export_xy", self.export_xy_cb.isChecked())
         settings.setValue("export_dat", self.export_dat_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
@@ -552,14 +868,14 @@ class DioptasBatchGUI(QMainWindow):
                 calibration_file=self.cal_file_edit.text(),
                 output_directory=self.output_dir_edit.text(),
                 mask_file=mask_file,
-                num_points=self.integration_points_spin.value(),
-                cake_azimuth_points=self.azimuth_points_spin.value(),
+                num_points=1,
+                cake_azimuth_points=FIXED_AZIMUTH_BINS,
                 overwrite=self.overwrite_cb.isChecked()
             )
             self._append_log(
                 "Requested integration settings: "
-                f"radial={self.integration_points_spin.value()}, "
-                f"azimuth={self.azimuth_points_spin.value()}, "
+                "radial=auto, "
+                f"azimuth={FIXED_AZIMUTH_BINS}, "
                 f"overwrite={self.overwrite_cb.isChecked()}"
             )
             
@@ -615,14 +931,14 @@ class DioptasBatchGUI(QMainWindow):
                 calibration_file=self.cal_file_edit.text(),
                 output_directory=self.output_dir_edit.text(),
                 mask_file=mask_file,
-                num_points=self.integration_points_spin.value(),
-                cake_azimuth_points=self.azimuth_points_spin.value(),
+                num_points=1,
+                cake_azimuth_points=FIXED_AZIMUTH_BINS,
                 overwrite=self.overwrite_cb.isChecked()
             )
             self._append_log(
                 "Requested integration settings: "
-                f"radial={self.integration_points_spin.value()}, "
-                f"azimuth={self.azimuth_points_spin.value()}, "
+                "radial=auto, "
+                f"azimuth={FIXED_AZIMUTH_BINS}, "
                 f"overwrite={self.overwrite_cb.isChecked()}"
             )
             self.current_mode = "watch"
@@ -652,6 +968,7 @@ class DioptasBatchGUI(QMainWindow):
                 if unprocessed_files:
                     self._append_log(f"Found {len(unprocessed_files)} existing unprocessed files")
                     self.pending_files.extend(unprocessed_files)
+                    self._add_pending_files(unprocessed_files)
                     # Start processing immediately
                     self._process_next_batch()
             
@@ -695,6 +1012,7 @@ class DioptasBatchGUI(QMainWindow):
         
         if completed_files:
             self.pending_files.extend(completed_files)
+            self._add_pending_files(completed_files)
             self._process_next_batch()
             
     def _process_next_batch(self):
@@ -731,37 +1049,167 @@ class DioptasBatchGUI(QMainWindow):
         self.processing_thread.progress.connect(self._update_progress)
         self.processing_thread.finished.connect(self._processing_finished)
         self.processing_thread.error.connect(self._processing_error)
+        self.processing_thread.integration_points_estimated.connect(
+            self._update_integration_points_spinbox
+        )
+        if self.current_mode == "sequence":
+            self._update_sequence_controls()
         self.processing_thread.start()
         self._append_log("-" * 80)
         self._append_log(f"Starting file set: {Path(file_set[0]).stem}")
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%v/%m images")
+        if self.current_mode == "batch":
+            self.progress_bar.setMaximum(1)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%v/%m images")
+        else:
+            self.progress_bar.setMaximum(100)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
         self.status_label.setText(f"Status: Processing {Path(file_set[0]).stem}...")
         self._update_stats_label()
         
     def _update_progress(self, current, total, message):
         """Update progress bar."""
-        self.progress_bar.setMaximum(max(total, 1))
-        self.progress_bar.setValue(current)
         if self.current_mode == "batch" and self.requested_file_sets:
+            self.progress_bar.setMaximum(max(total, 1))
+            self.progress_bar.setValue(current)
             current_set_idx = self.completed_file_sets + 1
             self.status_label.setText(
                 f"Status: File set {current_set_idx}/{self.requested_file_sets} | {message}"
             )
+        elif self.current_mode == "sequence":
+            self.status_label.setText(
+                f"Status: Sequence {Path(self.current_file_set[0]).stem} | {message}"
+            )
         else:
             self.status_label.setText(f"Status: {message}")
+
+    def _update_integration_points_spinbox(self, num_points):
+        """Reflect Dioptas' current radial-bin estimate in the GUI."""
+        num_points = int(num_points)
+        if self.integration_points_edit.text() == str(num_points):
+            return
+        self.integration_points_edit.setText(str(num_points))
+
+    def _record_processed_files(self, file_paths):
+        """Mark completed source files in the side-panel history."""
+        completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for file_path in file_paths:
+            resolved_path = str(Path(file_path).resolve())
+            updated = False
+            for record in self.file_history_records:
+                if record["path"] == resolved_path and record["status"] == "pending":
+                    record["status"] = "processed"
+                    record["completed_at"] = completed_at
+                    updated = True
+                    break
+            if not updated:
+                self.file_history_records.append(
+                    {
+                        "path": resolved_path,
+                        "status": "processed",
+                        "completed_at": completed_at,
+                    }
+                )
+        self._render_file_history()
+
+    def _add_pending_files(self, file_paths):
+        """Append pending source files to the side-panel history."""
+        for file_path in file_paths:
+            resolved_path = str(Path(file_path).resolve())
+            self.file_history_records.append(
+                {
+                    "path": resolved_path,
+                    "status": "pending",
+                    "completed_at": "",
+                }
+            )
+        self._render_file_history()
+
+    def _set_pending_batch_files(self, file_paths):
+        """Show newly selected batch files immediately in italic without timestamps."""
+        self._clear_pending_batch_files()
+        self._add_pending_files(file_paths)
+
+    def _clear_pending_batch_files(self):
+        """Remove any still-pending batch selections from the side-panel history."""
+        self.file_history_records = [
+            record for record in self.file_history_records
+            if record["status"] != "pending"
+        ]
+        self._render_file_history()
+
+    def _remove_pending_files(self, file_paths):
+        """Remove specific pending file entries from the side-panel history."""
+        paths_to_remove = {str(Path(file_path).resolve()) for file_path in file_paths}
+        self.file_history_records = [
+            record for record in self.file_history_records
+            if not (record["status"] == "pending" and record["path"] in paths_to_remove)
+        ]
+        self._render_file_history()
+
+    def _render_file_history(self):
+        """Render the side-panel file history as a two-column table."""
+        self.file_list_table.setRowCount(len(self.file_history_records))
+        for row, record in enumerate(self.file_history_records):
+            path_label = QLabel()
+            path_label.setTextFormat(Qt.TextFormat.PlainText)
+            path_label.setToolTip(record["path"])
+            path_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            path_label.setIndent(4)
+            label_font = path_label.font()
+            if record["status"] == "pending":
+                label_font.setItalic(True)
+            path_label.setFont(label_font)
+            available_width = max(
+                80,
+                self.file_list_table.columnWidth(0) - 16,
+            )
+            elided_text = QFontMetrics(label_font).elidedText(
+                record["path"],
+                Qt.TextElideMode.ElideLeft,
+                available_width,
+            )
+            path_label.setText(elided_text)
+
+            processed_item = QTableWidgetItem(record["completed_at"])
+            self.file_list_table.setCellWidget(row, 0, path_label)
+            self.file_list_table.setItem(row, 1, processed_item)
+
+        self.file_list_table.scrollToBottom()
         
     def _processing_finished(self, stats):
         """Handle processing completion."""
         self.processing_thread = None
         self.completed_file_sets += 1
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%p%")
+        if self.current_mode == "batch":
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
+        else:
+            self.progress_bar.setMaximum(100)
+            self.progress_bar.setValue(100)
+            self.progress_bar.setFormat("%p%")
         
         self._append_log(
             f"Completed: {stats['processed']}/{stats['total_images']} images "
             f"(skipped: {stats.get('skipped', 0)})"
         )
+        skipped_all = (
+            stats.get("processed", 0) > 0
+            and stats.get("processed", 0) == stats.get("skipped", 0)
+            and stats.get("failed", 0) == 0
+        )
+        if skipped_all:
+            self._remove_pending_files(self.current_file_set)
+            if self.current_mode in {"batch", "sequence"}:
+                QMessageBox.warning(
+                    self,
+                    "Files Already Exist",
+                    "Processing was not performed because output files already exist and "
+                    "\"Overwrite existing files\" is unchecked."
+                )
+        elif stats.get("processed", 0) > 0:
+            self._record_processed_files(self.current_file_set)
         
         # Update stats
         self._update_stats_label(stats)
@@ -773,6 +1221,9 @@ class DioptasBatchGUI(QMainWindow):
             # Check which mode we're in
             if self.file_watcher and self.file_watcher.is_running:
                 self.status_label.setText("Status: Watching for files...")
+            elif self.current_mode == "sequence":
+                self.status_label.setText("Status: Sequence file processed")
+                self._update_sequence_controls()
             else:
                 self.status_label.setText("Status: All files processed")
                 # Re-enable batch mode controls
@@ -782,9 +1233,19 @@ class DioptasBatchGUI(QMainWindow):
     def _processing_error(self, error_msg):
         """Handle processing error."""
         self.processing_thread = None
-        self.progress_bar.setValue(0)
+        if self.current_mode != "batch":
+            self.progress_bar.setMaximum(100)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%p%")
+        else:
+            self.progress_bar.setValue(0)
         self._append_log(f"ERROR: {error_msg}")
         self.status_label.setText("Status: Error occurred")
+        if self.current_mode == "sequence":
+            self._update_sequence_controls()
+        else:
+            self.process_batch_btn.setEnabled(len(self.selected_files) > 0)
+            self.select_files_btn.setEnabled(True)
         self._update_stats_label()
 
     def _update_stats_label(self, last_stats=None):
@@ -802,6 +1263,17 @@ class DioptasBatchGUI(QMainWindow):
                 f"File sets: {self.completed_file_sets}/{self.requested_file_sets} | "
                 f"{last_batch_text} | Pending files: {pending_count}"
             )
+            return
+
+        if self.current_mode == "sequence":
+            current_file = self.sequence_file_path.name if self.sequence_file_path else "-"
+            if last_stats:
+                self.stats_label.setText(
+                    f"Sequence file: {current_file} | "
+                    f"Last batch: {last_stats.get('processed', 0)}/{last_stats.get('total_images', 0)} images"
+                )
+            else:
+                self.stats_label.setText(f"Sequence file: {current_file} | Pending files: {pending_count}")
             return
 
         if last_stats:
@@ -823,6 +1295,9 @@ def main():
     """Main entry point."""
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
+    icon = load_app_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     
     window = DioptasBatchGUI()
     window.show()
