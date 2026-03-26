@@ -1,9 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.0.7"
+__version__ = "0.0.7a"
 
 """
-0.0.7 Fix craching during a large number of files processing.
+0.0.7 Fix crashing during large batch processing and improve skip/overwrite status visibility.
 0.0.6 GUI improvement
 0.0.5 fix resolution of cake along theta axis.  it is adjusted to show twice more in cake than chi for twotheta
 0.0.4 Include XY and DAT output options

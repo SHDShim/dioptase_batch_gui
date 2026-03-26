@@ -364,7 +364,7 @@ class DioptasBatchGUI(QMainWindow):
 
         file_list_legend = QLabel(
             '<span style="color: #cc0000; font-weight: 600;">Red</span>: overwritten files | '
-            '<span style="color: #008000; font-weight: 600;">Green</span>: skipped files | '
+            '<span style="color: #008000; font-weight: 600;">Green</span>: skipped because output files already exist | '
             "White: processed files | "
             "White italic: pending files"
         )
