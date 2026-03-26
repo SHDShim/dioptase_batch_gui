@@ -8,6 +8,7 @@ import sys
 import os
 import logging
 import re
+from html import escape
 from datetime import datetime
 from pathlib import Path
 from PyQt6.QtWidgets import (
@@ -44,7 +45,7 @@ def load_app_icon():
 class ProcessingThread(QThread):
     """Thread for background processing to keep GUI responsive."""
     progress = pyqtSignal(int, int, str)  # current, total, message
-    finished = pyqtSignal(dict)  # statistics
+    result_ready = pyqtSignal(dict)  # statistics
     error = pyqtSignal(str)
     integration_points_estimated = pyqtSignal(int)
     
@@ -83,7 +84,7 @@ class ProcessingThread(QThread):
                 progress_callback=self._progress_callback,
                 estimate_callback=self._estimate_callback,
             )
-            self.finished.emit(stats)
+            self.result_ready.emit(stats)
         except Exception as e:
             self.error.emit(str(e))
             
@@ -110,6 +111,8 @@ class DioptasBatchGUI(QMainWindow):
         self.file_watcher = None
         self.processor = None
         self.processing_thread = None
+        self._processing_result = None
+        self._processing_error_message = None
         self.pending_files = []
         self.selected_files = []
         self.current_file_set = []
@@ -359,6 +362,19 @@ class DioptasBatchGUI(QMainWindow):
         self.file_list_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         file_list_layout.addWidget(self.file_list_table)
 
+        file_list_legend = QLabel(
+            '<span style="color: #cc0000; font-weight: 600;">Red</span>: overwritten files | '
+            '<span style="color: #008000; font-weight: 600;">Green</span>: skipped files | '
+            "White: processed files | "
+            "White italic: pending files"
+        )
+        file_list_legend.setTextFormat(Qt.TextFormat.RichText)
+        file_list_legend.setWordWrap(True)
+        file_list_legend.setStyleSheet(
+            "color: #d9d9d9; font-size: 11px; padding-top: 4px;"
+        )
+        file_list_layout.addWidget(file_list_legend)
+
         file_list_group.setLayout(file_list_layout)
         right_layout.addWidget(file_list_group, 3)
         
@@ -533,7 +549,22 @@ class DioptasBatchGUI(QMainWindow):
         
     def _append_log(self, message):
         """Append message to log console."""
+        if "OVERWRITE:" in message:
+            self._append_colored_log(message, "#cc0000")
+            return
+        if "SKIPPED:" in message:
+            self._append_colored_log(message, "#008000")
+            return
         self.log_console.append(message)
+        self.log_console.verticalScrollBar().setValue(
+            self.log_console.verticalScrollBar().maximum()
+        )
+
+    def _append_colored_log(self, message, color):
+        """Append a single colored log line to the console."""
+        self.log_console.append(
+            f'<span style="color: {escape(color, quote=True)};">{escape(message)}</span>'
+        )
         self.log_console.verticalScrollBar().setValue(
             self.log_console.verticalScrollBar().maximum()
         )
@@ -1047,8 +1078,9 @@ class DioptasBatchGUI(QMainWindow):
             self.apply_mask_to_cake_cb.isChecked(),
         )
         self.processing_thread.progress.connect(self._update_progress)
-        self.processing_thread.finished.connect(self._processing_finished)
-        self.processing_thread.error.connect(self._processing_error)
+        self.processing_thread.result_ready.connect(self._store_processing_result)
+        self.processing_thread.error.connect(self._store_processing_error)
+        self.processing_thread.finished.connect(self._processing_thread_finished)
         self.processing_thread.integration_points_estimated.connect(
             self._update_integration_points_spinbox
         )
@@ -1091,15 +1123,15 @@ class DioptasBatchGUI(QMainWindow):
             return
         self.integration_points_edit.setText(str(num_points))
 
-    def _record_processed_files(self, file_paths):
-        """Mark completed source files in the side-panel history."""
+    def _record_file_history_status(self, file_paths, status):
+        """Mark source files with their final status in the side-panel history."""
         completed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         for file_path in file_paths:
             resolved_path = str(Path(file_path).resolve())
             updated = False
             for record in self.file_history_records:
                 if record["path"] == resolved_path and record["status"] == "pending":
-                    record["status"] = "processed"
+                    record["status"] = status
                     record["completed_at"] = completed_at
                     updated = True
                     break
@@ -1107,11 +1139,23 @@ class DioptasBatchGUI(QMainWindow):
                 self.file_history_records.append(
                     {
                         "path": resolved_path,
-                        "status": "processed",
+                        "status": status,
                         "completed_at": completed_at,
                     }
                 )
         self._render_file_history()
+
+    def _record_processed_files(self, file_paths):
+        """Mark completed source files in the side-panel history."""
+        self._record_file_history_status(file_paths, "processed")
+
+    def _record_skipped_files(self, file_paths):
+        """Mark skipped source files in the side-panel history."""
+        self._record_file_history_status(file_paths, "skipped")
+
+    def _record_overwritten_files(self, file_paths):
+        """Mark overwritten source files in the side-panel history."""
+        self._record_file_history_status(file_paths, "overwritten")
 
     def _add_pending_files(self, file_paths):
         """Append pending source files to the side-panel history."""
@@ -1161,6 +1205,10 @@ class DioptasBatchGUI(QMainWindow):
             if record["status"] == "pending":
                 label_font.setItalic(True)
             path_label.setFont(label_font)
+            if record["status"] == "skipped":
+                path_label.setStyleSheet("color: #008000;")
+            elif record["status"] == "overwritten":
+                path_label.setStyleSheet("color: #cc0000;")
             available_width = max(
                 80,
                 self.file_list_table.columnWidth(0) - 16,
@@ -1173,6 +1221,10 @@ class DioptasBatchGUI(QMainWindow):
             path_label.setText(elided_text)
 
             processed_item = QTableWidgetItem(record["completed_at"])
+            if record["status"] == "skipped":
+                processed_item.setForeground(Qt.GlobalColor.darkGreen)
+            elif record["status"] == "overwritten":
+                processed_item.setForeground(Qt.GlobalColor.red)
             self.file_list_table.setCellWidget(row, 0, path_label)
             self.file_list_table.setItem(row, 1, processed_item)
 
@@ -1180,7 +1232,6 @@ class DioptasBatchGUI(QMainWindow):
         
     def _processing_finished(self, stats):
         """Handle processing completion."""
-        self.processing_thread = None
         self.completed_file_sets += 1
         if self.current_mode == "batch":
             self.progress_bar.setValue(0)
@@ -1200,14 +1251,15 @@ class DioptasBatchGUI(QMainWindow):
             and stats.get("failed", 0) == 0
         )
         if skipped_all:
-            self._remove_pending_files(self.current_file_set)
+            self._record_skipped_files(self.current_file_set)
             if self.current_mode in {"batch", "sequence"}:
-                QMessageBox.warning(
-                    self,
-                    "Files Already Exist",
-                    "Processing was not performed because output files already exist and "
-                    "\"Overwrite existing files\" is unchecked."
+                current_name = Path(self.current_file_set[0]).stem if self.current_file_set else "-"
+                self._append_log(
+                    "SKIPPED: existing outputs for "
+                    f"{current_name}: overwrite is disabled."
                 )
+        elif stats.get("overwritten", 0) > 0:
+            self._record_overwritten_files(self.current_file_set)
         elif stats.get("processed", 0) > 0:
             self._record_processed_files(self.current_file_set)
         
@@ -1232,7 +1284,6 @@ class DioptasBatchGUI(QMainWindow):
             
     def _processing_error(self, error_msg):
         """Handle processing error."""
-        self.processing_thread = None
         if self.current_mode != "batch":
             self.progress_bar.setMaximum(100)
             self.progress_bar.setValue(0)
@@ -1246,6 +1297,41 @@ class DioptasBatchGUI(QMainWindow):
         else:
             self.process_batch_btn.setEnabled(len(self.selected_files) > 0)
             self.select_files_btn.setEnabled(True)
+        self._update_stats_label()
+
+    def _store_processing_result(self, stats):
+        """Store worker results until Qt reports the thread has fully stopped."""
+        self._processing_result = stats
+
+    def _store_processing_error(self, error_msg):
+        """Store worker errors until Qt reports the thread has fully stopped."""
+        self._processing_error_message = error_msg
+
+    def _processing_thread_finished(self):
+        """Finalize thread cleanup only after the underlying QThread has exited."""
+        thread = self.processing_thread
+        result = self._processing_result
+        error_msg = self._processing_error_message
+
+        self.processing_thread = None
+        self._processing_result = None
+        self._processing_error_message = None
+
+        if thread is not None:
+            thread.deleteLater()
+
+        if error_msg is not None:
+            self._processing_error(error_msg)
+            return
+
+        if result is not None:
+            self._processing_finished(result)
+            return
+
+        self._append_log("ERROR: Processing thread exited without returning a result.")
+        self.status_label.setText("Status: Error occurred")
+        self.process_batch_btn.setEnabled(len(self.selected_files) > 0)
+        self.select_files_btn.setEnabled(True)
         self._update_stats_label()
 
     def _update_stats_label(self, last_stats=None):
@@ -1288,6 +1374,9 @@ class DioptasBatchGUI(QMainWindow):
         """Handle window close."""
         if self.file_watcher:
             self._stop_watching()
+        if self.processing_thread is not None:
+            self._append_log("Waiting for active processing thread to finish before closing...")
+            self.processing_thread.wait()
         event.accept()
 
 

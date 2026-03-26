@@ -347,6 +347,10 @@ class BatchProcessor:
             "azi_path": azi_path,
             "poni_dest": cake_folder / Path(self.calibration_file).name,
         }
+
+    def _log_overwrite(self, label: str, path: Path):
+        """Log an explicit overwrite event for GUI highlighting."""
+        logger.info(f"OVERWRITE: {label}: {path.resolve()}")
         
     def process_lambda_image(self, 
                             file_set: List[str], 
@@ -385,6 +389,7 @@ class BatchProcessor:
             'npy_file': None,
             'npy_files': None,
             'skipped': False,
+            'overwritten': False,
         }
         paths = self._build_output_paths(base_output_name)
         chi_exists = paths["chi_path"].exists()
@@ -428,7 +433,7 @@ class BatchProcessor:
                                 logger.warning(f"Failed to copy poni file: {e}")
 
                     logger.info(
-                        f"Skipping image {image_index}: outputs already exist for {base_output_name}"
+                        f"SKIPPED: image {image_index}: outputs already exist for {base_output_name}"
                     )
                     if existing_dims is not None:
                         logger.info(
@@ -500,6 +505,9 @@ class BatchProcessor:
                     results['chi_file'] = str(chi_path)
                     results['skipped'] = True
                 else:
+                    if self.overwrite and chi_exists:
+                        results['overwritten'] = True
+                        self._log_overwrite("CHI file", chi_path)
                     self.config.save_pattern(str(chi_path))
                     results['chi_file'] = str(chi_path)
                     logger.info(f"Saved CHI file: {chi_path.resolve()}")
@@ -512,6 +520,9 @@ class BatchProcessor:
                     results['xy_file'] = str(xy_path)
                     results['skipped'] = True
                 else:
+                    if self.overwrite and xy_exists:
+                        results['overwritten'] = True
+                        self._log_overwrite("XY file", xy_path)
                     self.config.save_pattern(str(xy_path))
                     results['xy_file'] = str(xy_path)
                     logger.info(f"Saved XY file: {xy_path.resolve()}")
@@ -524,6 +535,9 @@ class BatchProcessor:
                     results['dat_file'] = str(dat_path)
                     results['skipped'] = True
                 else:
+                    if self.overwrite and dat_exists:
+                        results['overwritten'] = True
+                        self._log_overwrite("DAT file", dat_path)
                     self.config.save_pattern(str(dat_path))
                     results['dat_file'] = str(dat_path)
                     logger.info(f"Saved DAT file: {dat_path.resolve()}")
@@ -540,6 +554,9 @@ class BatchProcessor:
                 poni_dest = paths["poni_dest"]
                 if not poni_dest.exists() or self.overwrite:
                     try:
+                        if self.overwrite and poni_dest.exists():
+                            results['overwritten'] = True
+                            self._log_overwrite("PONI file", poni_dest)
                         shutil.copy2(self.calibration_file, poni_dest)
                         logger.debug(f"Copied poni file to {cake_folder}")
                     except Exception as e:
@@ -586,10 +603,19 @@ class BatchProcessor:
                         f"intensity_shape={actual_shape}, tth={actual_tth_len}, azi={actual_azi_len}"
                     )
 
+                    if self.overwrite and cake_int_exists:
+                        results['overwritten'] = True
+                        self._log_overwrite("CAKE intensity file", int_path)
                     if self.overwrite or not cake_int_exists:
                         np.save(str(int_path), intensity_cake)
+                    if self.overwrite and cake_tth_exists:
+                        results['overwritten'] = True
+                        self._log_overwrite("CAKE two-theta file", tth_path)
                     if self.overwrite or not cake_tth_exists:
                         np.save(str(tth_path), tth_cake)
+                    if self.overwrite and cake_azi_exists:
+                        results['overwritten'] = True
+                        self._log_overwrite("CAKE azimuth file", azi_path)
                     if self.overwrite or not cake_azi_exists:
                         np.save(str(azi_path), chi_cake)
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
@@ -638,6 +664,7 @@ class BatchProcessor:
             'processed': 0,
             'failed': 0,
             'skipped': 0,
+            'overwritten': 0,
             'chi_files': [],
             'xy_files': [],
             'dat_files': [],
@@ -680,6 +707,8 @@ class BatchProcessor:
                 stats['processed'] += 1
                 if results.get('skipped'):
                     stats['skipped'] += 1
+                if results.get('overwritten'):
+                    stats['overwritten'] += 1
                 if results.get('chi_file'):
                     stats['chi_files'].append(results['chi_file'])
                 if results.get('xy_file'):
