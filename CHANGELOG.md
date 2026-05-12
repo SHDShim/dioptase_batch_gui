@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.0.7] - 2026-03-25
+## [0.0.7a] - 2026-03-25
 
 - Fixed a `QThread` lifecycle crash that could abort large batch runs partway through processing.
 - Replaced the modal "files already exist" warning with non-blocking processing-log entries.

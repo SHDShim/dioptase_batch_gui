@@ -303,7 +303,7 @@ class DioptasBatchGUI(QMainWindow):
         self.export_dat_cb.setChecked(False)
         checkbox_grid.addWidget(self.export_dat_cb, 1, 0)
         
-        self.export_npy_cb = QCheckBox("Export NPY files")
+        self.export_npy_cb = QCheckBox("Export Cake NPY Files")
         self.export_npy_cb.setChecked(True)
         checkbox_grid.addWidget(self.export_npy_cb, 1, 1)
 
