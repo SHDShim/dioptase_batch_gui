@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "GUI app for automated batch processing of Lambda detector data with Dioptas"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "GPL-3.0-only" }
+license = "GPL-3.0-only"
 authors = [
   { name = "Dioptas Batch GUI contributors" }
 ]
@@ -16,7 +16,6 @@ keywords = ["xrd", "dioptas", "batch", "gui", "pyqt"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering",
 ]

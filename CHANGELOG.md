@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-05-13
+
+- Updated NPY cake output labeling.
+
 ## [0.0.7a] - 2026-03-25
 
 - Fixed a `QThread` lifecycle crash that could abort large batch runs partway through processing.
