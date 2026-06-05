@@ -832,6 +832,13 @@ class DioptasBatchGUI(QMainWindow):
         if self.export_dat_cb.isChecked():
             selected_paths.append(output_dir / f"{base_name}.dat")
         return selected_paths
+
+    def _selected_1d_output_paths_for_file_set(self, file_set):
+        """Return selected 1D output paths for every image in a file set."""
+        selected_paths = []
+        for base_name in self.processor.output_base_names_for_file_set(file_set):
+            selected_paths.extend(self._selected_1d_output_paths(base_name))
+        return selected_paths
     
     def _browse_watch_dir(self):
         """Browse for watch directory."""
@@ -988,13 +995,12 @@ class DioptasBatchGUI(QMainWindow):
                 existing_files.extend([str(f) for f in watch_path.glob(pattern)])
             
             if existing_files:
-                # Check which files haven't been processed yet
+                # Check which file sets haven't been processed yet.
                 unprocessed_files = []
-                for file_path in existing_files:
-                    base_name = Path(file_path).stem
-                    required_1d_paths = self._selected_1d_output_paths(base_name)
+                for file_set in self.processor.group_lambda_files(existing_files):
+                    required_1d_paths = self._selected_1d_output_paths_for_file_set(file_set)
                     if not required_1d_paths or not all(path.exists() for path in required_1d_paths):
-                        unprocessed_files.append(file_path)
+                        unprocessed_files.extend(file_set)
                 
                 if unprocessed_files:
                     self._append_log(f"Found {len(unprocessed_files)} existing unprocessed files")

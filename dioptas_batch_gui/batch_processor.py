@@ -330,6 +330,28 @@ class BatchProcessor:
             
         return 0
 
+    def _file_set_base_name(self, file_set: List[str]) -> str:
+        """Return the common output base name for a file set."""
+        base_name = Path(file_set[0]).stem
+        return re.sub(r'_m\d+(_part\d+)?$', '', base_name)
+
+    def _snapshot_output_name(self, base_name: str, image_index: int, n_images: int) -> str:
+        """Return a unique output base name for one image in a file set."""
+        if n_images > 1:
+            return f"{base_name}_{image_index + 1:03d}"
+        return base_name
+
+    def output_base_names_for_file_set(self, file_set: List[str]) -> List[str]:
+        """Return output base names that will be written for a file set."""
+        base_name = self._file_set_base_name(file_set)
+        n_images = self.get_image_count(file_set)
+        if n_images <= 0:
+            return [base_name]
+        return [
+            self._snapshot_output_name(base_name, img_idx, n_images)
+            for img_idx in range(n_images)
+        ]
+
     def _build_output_paths(self, base_output_name: str) -> dict:
         """Build output paths for 1D and cake exports for one image."""
         cake_folder = self.output_directory / f"{base_output_name}-param"
@@ -672,8 +694,7 @@ class BatchProcessor:
         }
         
         # Get base name for output files
-        base_name = Path(file_set[0]).stem
-        base_name = re.sub(r'_m\d+(_part\d+)?$', '', base_name)
+        base_name = self._file_set_base_name(file_set)
         
         # Get number of images
         n_images = self.get_image_count(file_set)
@@ -693,7 +714,7 @@ class BatchProcessor:
             results = self.process_lambda_image(
                 file_set,
                 img_idx,
-                base_name,
+                self._snapshot_output_name(base_name, img_idx, n_images),
                 export_chi,
                 export_xy,
                 export_dat,

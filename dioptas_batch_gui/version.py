@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.0.8"
+__version__ = "0.0.9"
 
 """
+0.0.9 Add snapshot-specific output naming for multi-image HDF5/NXS files.
 0.0.8 Label change for npy to cake
 0.0.7a Alpha build for TestPyPI with crash fix and skip/overwrite status visibility improvements.
 0.0.6 GUI improvement

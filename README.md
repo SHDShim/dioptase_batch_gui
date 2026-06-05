@@ -131,6 +131,15 @@ For each processed dataset, the app exports:
 - `<base_name>-param/<base_name>.tth.cake.npy`
 - `<base_name>-param/<base_name>.azi.cake.npy`
 
+For HDF5/NXS files containing multiple snapshot images, outputs use a
+one-based snapshot suffix before the extension and in the parameter directory
+name:
+
+- `<base_name>_001.chi`
+- `<base_name>_001-param/<base_name>_001.int.cake.npy`
+- `<base_name>_001-param/<base_name>_001.tth.cake.npy`
+- `<base_name>_001-param/<base_name>_001.azi.cake.npy`
+
 Output layout:
 
 ```text

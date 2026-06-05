@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-06-04
+
+- Added snapshot-specific output naming for multi-image HDF5/NXS files.
+
 ## [0.0.8] - 2026-05-13
 
 - Updated NPY cake output labeling.
