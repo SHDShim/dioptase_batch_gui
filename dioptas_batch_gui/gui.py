@@ -124,6 +124,7 @@ class DioptasBatchGUI(QMainWindow):
         self.requested_input_files = 0
         self.requested_file_sets = 0
         self.completed_file_sets = 0
+        self.abort_requested = False
         
         # Setup logging
         self._setup_logging()
@@ -213,14 +214,24 @@ class DioptasBatchGUI(QMainWindow):
         config_layout = QVBoxLayout()
         
         # Output directory
-        output_label = QLabel("Output Directory:")
+        output_label = QLabel("Output Directory (Auto):")
         output_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         config_layout.addWidget(output_label)
         output_layout = QHBoxLayout()
         self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setReadOnly(True)
+        self.output_dir_edit.setPlaceholderText(
+            "Automatically set to <source folder>/processed-YYYY-MM-DD"
+        )
+        self.output_dir_edit.setToolTip(
+            "Processed files are written to a dated subfolder inside each source file directory."
+        )
         output_layout.addWidget(self.output_dir_edit)
-        self.output_dir_btn = QPushButton("Browse...")
-        self.output_dir_btn.clicked.connect(self._browse_output_dir)
+        self.output_dir_btn = QPushButton("Auto")
+        self.output_dir_btn.setEnabled(False)
+        self.output_dir_btn.setToolTip(
+            "Output folders are assigned automatically per processed file set."
+        )
         output_layout.addWidget(self.output_dir_btn)
         config_layout.addLayout(output_layout)
         
@@ -426,8 +437,8 @@ class DioptasBatchGUI(QMainWindow):
         """Return stylesheet for the watch toggle button."""
         return (
             "QPushButton {"
-            " background-color: #4CAF50;"
-            " border: 2px solid #388E3C;"
+            " background-color: #145A1A;"
+            " border: 2px solid #0E4414;"
             " border-radius: 4px;"
             " color: white;"
             " font-weight: bold;"
@@ -438,13 +449,13 @@ class DioptasBatchGUI(QMainWindow):
             " padding-left: 15px;"
             "}"
             "QPushButton:checked {"
-            " background-color: #f44336;"
-            " border: 2px inset #B71C1C;"
+            " background-color: #6D0000;"
+            " border: 2px inset #520000;"
             " padding-top: 9px;"
             " padding-left: 15px;"
             "}"
             "QPushButton:checked:pressed {"
-            " background-color: #d73a2f;"
+            " background-color: #5A0000;"
             "}"
         )
 
@@ -469,7 +480,7 @@ class DioptasBatchGUI(QMainWindow):
         self.sequence_select_btn = QPushButton("Select File ...")
         self.sequence_select_btn.clicked.connect(self._select_sequence_file)
         self.sequence_select_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }"
+            "QPushButton { background-color: #145A1A; color: white; font-weight: bold; }"
         )
         self.sequence_process_btn = QPushButton("Process Current File")
         self.sequence_process_btn.clicked.connect(self._process_current_sequence_file)
@@ -478,7 +489,7 @@ class DioptasBatchGUI(QMainWindow):
         self.sequence_prev_btn = QPushButton("<")
         self.sequence_prev_btn.clicked.connect(lambda: self._step_sequence(-1))
         self.sequence_prev_btn.setStyleSheet(
-            "QPushButton { background-color: #f44336; color: white; font-weight: bold; }"
+            "QPushButton { background-color: #6D0000; color: white; font-weight: bold; }"
         )
         self.sequence_prev_btn.setEnabled(False)
         select_layout.addWidget(self.sequence_prev_btn)
@@ -486,7 +497,7 @@ class DioptasBatchGUI(QMainWindow):
         self.sequence_next_btn = QPushButton(">")
         self.sequence_next_btn.clicked.connect(lambda: self._step_sequence(1))
         self.sequence_next_btn.setStyleSheet(
-            "QPushButton { background-color: #f44336; color: white; font-weight: bold; }"
+            "QPushButton { background-color: #6D0000; color: white; font-weight: bold; }"
         )
         self.sequence_next_btn.setEnabled(False)
         select_layout.addWidget(self.sequence_next_btn)
@@ -522,7 +533,7 @@ class DioptasBatchGUI(QMainWindow):
         self.clear_selection_btn.clicked.connect(self._clear_selection)
 
         self.select_files_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }"
+            "QPushButton { background-color: #145A1A; color: white; font-weight: bold; }"
         )
         self.select_files_btn.setFixedHeight(self.clear_selection_btn.sizeHint().height())
 
@@ -531,7 +542,7 @@ class DioptasBatchGUI(QMainWindow):
         self.process_batch_btn = QPushButton("Process Selected Files")
         self.process_batch_btn.clicked.connect(self._process_batch)
         self.process_batch_btn.setStyleSheet(
-            "QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }"
+            "QPushButton { background-color: #6D0000; color: white; font-weight: bold; padding: 10px; }"
         )
         self.process_batch_btn.setEnabled(False)
         common_button_height = max(
@@ -543,9 +554,59 @@ class DioptasBatchGUI(QMainWindow):
         self.clear_selection_btn.setFixedHeight(common_button_height)
         self.process_batch_btn.setFixedHeight(common_button_height)
         file_select_layout.addWidget(self.process_batch_btn)
-        
+
+        self.abort_batch_btn = QPushButton("Abort")
+        self.abort_batch_btn.clicked.connect(self._request_batch_abort)
+        self.abort_batch_btn.setStyleSheet(
+            "QPushButton { background-color: #ff9800; color: black; font-weight: bold; padding: 10px; }"
+        )
+        self.abort_batch_btn.setFixedHeight(common_button_height)
+        self.abort_batch_btn.setEnabled(False)
+        file_select_layout.addWidget(self.abort_batch_btn)
+
         file_select_layout.addStretch()
         layout.addLayout(file_select_layout)
+
+    def _set_batch_mode_controls(self, is_processing):
+        """Update batch-mode controls for the current processing state."""
+        has_selection = len(self.selected_files) > 0
+        self.process_batch_btn.setEnabled(not is_processing and has_selection)
+        self.select_files_btn.setEnabled(not is_processing)
+        self.clear_selection_btn.setEnabled(not is_processing)
+        self.abort_batch_btn.setEnabled(is_processing and self.current_mode == "batch")
+
+    def _request_batch_abort(self):
+        """Stop batch processing after the active file set completes."""
+        if self.current_mode != "batch" or self.processing_thread is None or self.abort_requested:
+            return
+
+        self.abort_requested = True
+        self.abort_batch_btn.setEnabled(False)
+        self._append_log(
+            "ABORT: current file set will finish, then remaining queued files will be removed."
+        )
+        self.status_label.setText("Status: Abort requested; finishing current file set...")
+
+    def _finalize_batch_abort(self):
+        """Clear the queued-but-unprocessed batch files after an abort request."""
+        aborted_files = list(self.pending_files)
+        if aborted_files:
+            aborted_paths = {str(Path(file_path).resolve()) for file_path in aborted_files}
+            self.selected_files = [
+                file_path
+                for file_path in self.selected_files
+                if str(Path(file_path).resolve()) not in aborted_paths
+            ]
+            self._remove_pending_files(aborted_files)
+            self.pending_files = []
+            self._append_log(
+                f"ABORT: removed {len(aborted_files)} queued file(s) that were not processed."
+            )
+
+        self.abort_requested = False
+        self.status_label.setText("Status: Batch aborted")
+        self._set_batch_mode_controls(False)
+        self._update_stats_label()
         
     def _append_log(self, message):
         """Append message to log console."""
@@ -571,13 +632,11 @@ class DioptasBatchGUI(QMainWindow):
         
     def _select_files(self):
         """Select files for batch processing."""
-        # Get last used directory from settings, or use current output dir if set
+        # Get last used directory from settings, or use current watch dir if set
         settings = QSettings("Dioptas", "BatchProcessor")
         last_file_dir = settings.value("last_file_dir", "")
-        
-        # If no last directory, try to use current output directory
-        if not last_file_dir and self.output_dir_edit.text():
-            last_file_dir = self.output_dir_edit.text()
+        if not last_file_dir and self.watch_dir_edit.text():
+            last_file_dir = self.watch_dir_edit.text()
         
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
@@ -588,24 +647,20 @@ class DioptasBatchGUI(QMainWindow):
         if file_paths:
             self.selected_files = file_paths
             self._set_pending_batch_files(file_paths)
-            self.process_batch_btn.setEnabled(len(file_paths) > 0)
+            self._set_output_dir_preview_for_paths(file_paths)
+            self._set_batch_mode_controls(False)
             self._append_log(f"Selected {len(file_paths)} files")
-            
-            # Get the directory of the selected files
-            file_directory = str(Path(file_paths[0]).parent)
-            
-            # Automatically set output directory to same folder as h5 files
-            self.output_dir_edit.setText(file_directory)
-            
+
             # Save the directory for next time
-            settings.setValue("last_file_dir", file_directory)
+            settings.setValue("last_file_dir", str(Path(file_paths[0]).parent))
             self._save_settings()
             
     def _clear_selection(self):
         """Clear file selection."""
         self.selected_files = []
         self._clear_pending_batch_files()
-        self.process_batch_btn.setEnabled(False)
+        self._set_output_dir_preview(None)
+        self._set_batch_mode_controls(False)
         self._append_log("File selection cleared")
 
     def _select_sequence_file(self):
@@ -613,8 +668,8 @@ class DioptasBatchGUI(QMainWindow):
         settings = QSettings("Dioptas", "BatchProcessor")
         last_file_dir = settings.value("last_file_dir", "")
 
-        if not last_file_dir and self.output_dir_edit.text():
-            last_file_dir = self.output_dir_edit.text()
+        if not last_file_dir and self.watch_dir_edit.text():
+            last_file_dir = self.watch_dir_edit.text()
 
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -635,7 +690,6 @@ class DioptasBatchGUI(QMainWindow):
             return
 
         file_directory = str(Path(file_path).parent)
-        self.output_dir_edit.setText(file_directory)
         settings.setValue("last_file_dir", file_directory)
         self._save_settings()
         self._append_log(f"Selected sequence file: {Path(file_path).name}")
@@ -654,6 +708,7 @@ class DioptasBatchGUI(QMainWindow):
         self.sequence_file_path = path
         self.sequence_digits = len(match.group(1))
         self.sequence_index = int(match.group(1))
+        self._set_output_dir_preview_for_paths([str(path)])
         self._update_sequence_controls()
         return True
 
@@ -762,7 +817,7 @@ class DioptasBatchGUI(QMainWindow):
             mask_file = self.mask_file_edit.text() if self.mask_file_edit.text() else None
             self.processor = BatchProcessor(
                 calibration_file=self.cal_file_edit.text(),
-                output_directory=self.output_dir_edit.text(),
+                output_directory=self.sequence_file_path.parent,
                 mask_file=mask_file,
                 num_points=1,
                 cake_azimuth_points=FIXED_AZIMUTH_BINS,
@@ -777,6 +832,7 @@ class DioptasBatchGUI(QMainWindow):
             self._append_log(f"=== Processing sequence file: {self.sequence_file_path.name} ===")
 
             self.current_mode = "sequence"
+            self.abort_requested = False
             self.requested_input_files = 1
             self.requested_file_sets = 1
             self.completed_file_sets = 0
@@ -800,7 +856,6 @@ class DioptasBatchGUI(QMainWindow):
     def _load_settings(self):
         """Load saved settings."""
         settings = QSettings("Dioptas", "BatchProcessor")
-        self.output_dir_edit.setText(settings.value("output_dir", ""))
         self.cal_file_edit.setText(settings.value("cal_file", ""))
         self.mask_file_edit.setText(settings.value("mask_file", ""))
         self.watch_dir_edit.setText(settings.value("watch_dir", ""))
@@ -812,7 +867,6 @@ class DioptasBatchGUI(QMainWindow):
     def _save_settings(self):
         """Save current settings."""
         settings = QSettings("Dioptas", "BatchProcessor")
-        settings.setValue("output_dir", self.output_dir_edit.text())
         settings.setValue("cal_file", self.cal_file_edit.text())
         settings.setValue("mask_file", self.mask_file_edit.text())
         settings.setValue("watch_dir", self.watch_dir_edit.text())
@@ -821,9 +875,38 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
 
-    def _selected_1d_output_paths(self, base_name: str):
+    def _dated_output_folder_name(self) -> str:
+        """Return the per-day processed subfolder name."""
+        return f"processed-{datetime.now().strftime('%Y-%m-%d')}"
+
+    def _output_directory_for_path(self, file_path: str | Path) -> Path:
+        """Return the dated output directory for one source file."""
+        return Path(file_path).expanduser().resolve().parent / self._dated_output_folder_name()
+
+    def _output_directory_for_file_set(self, file_set) -> Path:
+        """Return the dated output directory for a Lambda file set."""
+        return self._output_directory_for_path(file_set[0])
+
+    def _set_output_dir_preview(self, output_dir: Path | None):
+        """Show the active or preview output directory in the GUI."""
+        self.output_dir_edit.setText("" if output_dir is None else str(output_dir))
+
+    def _set_output_dir_preview_for_paths(self, file_paths):
+        """Preview the dated output directory for the first selected file path."""
+        if not file_paths:
+            self._set_output_dir_preview(None)
+            return
+        self._set_output_dir_preview(self._output_directory_for_path(file_paths[0]))
+
+    def _apply_output_directory_for_file_set(self, file_set) -> Path:
+        """Point the processor at the dated source-local output directory."""
+        output_dir = self._output_directory_for_file_set(file_set)
+        self.processor.set_output_directory(output_dir)
+        self._set_output_dir_preview(output_dir)
+        return output_dir
+
+    def _selected_1d_output_paths(self, base_name: str, output_dir: Path):
         """Return selected 1D output paths for a base file name."""
-        output_dir = Path(self.output_dir_edit.text())
         selected_paths = []
         if self.export_chi_cb.isChecked():
             selected_paths.append(output_dir / f"{base_name}.chi")
@@ -836,8 +919,9 @@ class DioptasBatchGUI(QMainWindow):
     def _selected_1d_output_paths_for_file_set(self, file_set):
         """Return selected 1D output paths for every image in a file set."""
         selected_paths = []
+        output_dir = self._output_directory_for_file_set(file_set)
         for base_name in self.processor.output_base_names_for_file_set(file_set):
-            selected_paths.extend(self._selected_1d_output_paths(base_name))
+            selected_paths.extend(self._selected_1d_output_paths(base_name, output_dir))
         return selected_paths
     
     def _browse_watch_dir(self):
@@ -848,11 +932,12 @@ class DioptasBatchGUI(QMainWindow):
             self._save_settings()
             
     def _browse_output_dir(self):
-        """Browse for output directory."""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if dir_path:
-            self.output_dir_edit.setText(dir_path)
-            self._save_settings()
+        """Output directories are assigned automatically from source-file locations."""
+        QMessageBox.information(
+            self,
+            "Automatic Output Directory",
+            "Processed files are written to a dated subfolder inside each source file directory."
+        )
             
     def _browse_cal_file(self):
         """Browse for calibration file."""
@@ -876,9 +961,6 @@ class DioptasBatchGUI(QMainWindow):
         """Validate configuration before starting."""
         if check_watch_dir and not self.watch_dir_edit.text():
             QMessageBox.warning(self, "Configuration Error", "Please select a watch directory")
-            return False
-        if not self.output_dir_edit.text():
-            QMessageBox.warning(self, "Configuration Error", "Please select an output directory")
             return False
         if not self.cal_file_edit.text():
             QMessageBox.warning(self, "Configuration Error", "Please select a calibration file")
@@ -904,7 +986,7 @@ class DioptasBatchGUI(QMainWindow):
             mask_file = self.mask_file_edit.text() if self.mask_file_edit.text() else None
             self.processor = BatchProcessor(
                 calibration_file=self.cal_file_edit.text(),
-                output_directory=self.output_dir_edit.text(),
+                output_directory=Path(self.selected_files[0]).expanduser().resolve().parent,
                 mask_file=mask_file,
                 num_points=1,
                 cake_azimuth_points=FIXED_AZIMUTH_BINS,
@@ -931,13 +1013,13 @@ class DioptasBatchGUI(QMainWindow):
                 
             self._append_log(f"=== Processing {len(file_groups)} file set(s) ===")
             self.current_mode = "batch"
+            self.abort_requested = False
             self.requested_input_files = len(self.selected_files)
             self.requested_file_sets = len(file_groups)
             self.completed_file_sets = 0
-            
+
             # Disable controls
-            self.process_batch_btn.setEnabled(False)
-            self.select_files_btn.setEnabled(False)
+            self._set_batch_mode_controls(True)
             
             # Process files
             self.pending_files = [f for group in file_groups for f in group]
@@ -951,8 +1033,7 @@ class DioptasBatchGUI(QMainWindow):
             logging.error(f"Batch processing error: {e}")
             logging.error(f"Traceback:\n{error_details}")
             self._append_log(f"ERROR: {str(e)}")
-            self.process_batch_btn.setEnabled(True)
-            self.select_files_btn.setEnabled(True)
+            self._set_batch_mode_controls(False)
     
     def _start_watching(self):
         """Start file watching and auto-processing."""
@@ -965,9 +1046,10 @@ class DioptasBatchGUI(QMainWindow):
         try:
             # Initialize processor
             mask_file = self.mask_file_edit.text() if self.mask_file_edit.text() else None
+            self._set_output_dir_preview(None)
             self.processor = BatchProcessor(
                 calibration_file=self.cal_file_edit.text(),
-                output_directory=self.output_dir_edit.text(),
+                output_directory=Path(self.watch_dir_edit.text()).expanduser().resolve(),
                 mask_file=mask_file,
                 num_points=1,
                 cake_azimuth_points=FIXED_AZIMUTH_BINS,
@@ -980,6 +1062,7 @@ class DioptasBatchGUI(QMainWindow):
                 f"overwrite={self.overwrite_cb.isChecked()}"
             )
             self.current_mode = "watch"
+            self.abort_requested = False
             self.requested_input_files = 0
             self.requested_file_sets = 0
             self.completed_file_sets = 0
@@ -992,7 +1075,7 @@ class DioptasBatchGUI(QMainWindow):
             watch_path = Path(self.watch_dir_edit.text())
             existing_files = []
             for pattern in ['*.h5', '*.nxs']:
-                existing_files.extend([str(f) for f in watch_path.glob(pattern)])
+                existing_files.extend([str(f) for f in watch_path.rglob(pattern)])
             
             if existing_files:
                 # Check which file sets haven't been processed yet.
@@ -1054,6 +1137,8 @@ class DioptasBatchGUI(QMainWindow):
             
     def _process_next_batch(self):
         """Process the next batch of files."""
+        if self.current_mode == "batch" and self.abort_requested:
+            return
         if not self.pending_files or self.processing_thread is not None:
             return
             
@@ -1066,7 +1151,8 @@ class DioptasBatchGUI(QMainWindow):
         # Process first complete set
         file_set = file_groups[0]
         self.current_file_set = file_set
-        
+        output_dir = self._apply_output_directory_for_file_set(file_set)
+
         # Remove processed files from pending
         for f in file_set:
             if f in self.pending_files:
@@ -1095,6 +1181,7 @@ class DioptasBatchGUI(QMainWindow):
         self.processing_thread.start()
         self._append_log("-" * 80)
         self._append_log(f"Starting file set: {Path(file_set[0]).stem}")
+        self._append_log(f"Output directory: {output_dir}")
         if self.current_mode == "batch":
             self.progress_bar.setMaximum(1)
             self.progress_bar.setValue(0)
@@ -1112,8 +1199,9 @@ class DioptasBatchGUI(QMainWindow):
             self.progress_bar.setMaximum(max(total, 1))
             self.progress_bar.setValue(current)
             current_set_idx = self.completed_file_sets + 1
+            abort_suffix = " | abort queued" if self.abort_requested else ""
             self.status_label.setText(
-                f"Status: File set {current_set_idx}/{self.requested_file_sets} | {message}"
+                f"Status: File set {current_set_idx}/{self.requested_file_sets} | {message}{abort_suffix}"
             )
         elif self.current_mode == "sequence":
             self.status_label.setText(
@@ -1271,7 +1359,11 @@ class DioptasBatchGUI(QMainWindow):
         
         # Update stats
         self._update_stats_label(stats)
-        
+
+        if self.current_mode == "batch" and self.abort_requested:
+            self._finalize_batch_abort()
+            return
+
         # Process next batch if available
         if self.pending_files:
             self._process_next_batch()
@@ -1285,8 +1377,7 @@ class DioptasBatchGUI(QMainWindow):
             else:
                 self.status_label.setText("Status: All files processed")
                 # Re-enable batch mode controls
-                self.process_batch_btn.setEnabled(len(self.selected_files) > 0)
-                self.select_files_btn.setEnabled(True)
+                self._set_batch_mode_controls(False)
             
     def _processing_error(self, error_msg):
         """Handle processing error."""
@@ -1297,12 +1388,16 @@ class DioptasBatchGUI(QMainWindow):
         else:
             self.progress_bar.setValue(0)
         self._append_log(f"ERROR: {error_msg}")
+        if self.current_mode == "batch" and self.abort_requested:
+            self.status_label.setText("Status: Error occurred while abort was pending")
+            self._finalize_batch_abort()
+            return
+
         self.status_label.setText("Status: Error occurred")
         if self.current_mode == "sequence":
             self._update_sequence_controls()
         else:
-            self.process_batch_btn.setEnabled(len(self.selected_files) > 0)
-            self.select_files_btn.setEnabled(True)
+            self._set_batch_mode_controls(False)
         self._update_stats_label()
 
     def _store_processing_result(self, stats):
@@ -1336,8 +1431,7 @@ class DioptasBatchGUI(QMainWindow):
 
         self._append_log("ERROR: Processing thread exited without returning a result.")
         self.status_label.setText("Status: Error occurred")
-        self.process_batch_btn.setEnabled(len(self.selected_files) > 0)
-        self.select_files_btn.setEnabled(True)
+        self._set_batch_mode_controls(False)
         self._update_stats_label()
 
     def _update_stats_label(self, last_stats=None):

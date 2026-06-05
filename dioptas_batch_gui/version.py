@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 """
+0.2.0 Add batch abort controls, source-local dated output folders, and darker button styles.
 0.1.0 Insert snapshot numbers before trailing scan/index segments in output names.
 0.0.9 Add snapshot-specific output naming for multi-image HDF5/NXS files.
 0.0.8 Label change for npy to cake

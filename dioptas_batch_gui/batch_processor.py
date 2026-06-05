@@ -47,7 +47,6 @@ class BatchProcessor:
             overwrite: Whether to overwrite existing files
         """
         self.calibration_file = calibration_file
-        self.output_directory = Path(output_directory).expanduser().resolve()
         self.mask_file = mask_file
         self._mask_available = False
         self._mask_shape_loaded = None
@@ -56,8 +55,7 @@ class BatchProcessor:
         self.cake_azimuth_points = cake_azimuth_points
         self.overwrite = overwrite
         
-        # Create output directory if it doesn't exist
-        self.output_directory.mkdir(parents=True, exist_ok=True)
+        self.set_output_directory(output_directory)
         
         # Initialize Dioptas configuration
         self.config = Configuration()
@@ -70,9 +68,14 @@ class BatchProcessor:
         
         logger.info("Batch processor initialized")
         logger.info(f"Calibration: {calibration_file}")
-        logger.info(f"Output: {output_directory}")
         logger.info("Integration points: automatic (estimated per loaded image)")
         logger.info("CAKE radial points: automatic (matches the estimated 1D points)")
+
+    def set_output_directory(self, output_directory: str | Path):
+        """Update the output directory used for subsequent exports."""
+        self.output_directory = Path(output_directory).expanduser().resolve()
+        self.output_directory.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Output: {self.output_directory}")
 
     def _cake_radial_points(self) -> int:
         """CAKE radial bins match the 1D integration point count."""
