@@ -6,6 +6,7 @@ Main application for automated batch processing with folder watching.
 
 import sys
 import os
+import time
 import logging
 import re
 from html import escape
@@ -16,7 +17,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QPushButton, QFileDialog, QTextEdit,
     QCheckBox, QGroupBox, QProgressBar, QMessageBox, QRadioButton,
     QTabWidget, QSizePolicy, QTableWidget, QTableWidgetItem, QAbstractItemView,
-    QGridLayout,
+    QGridLayout, QSpinBox,
     QHeaderView
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSettings, Qt
@@ -27,6 +28,8 @@ from .batch_processor import BatchProcessor
 from .version import __version__
 
 FIXED_AZIMUTH_BINS = 360
+DEFAULT_WATCH_INACTIVITY_TIMEOUT_MINUTES = 10
+DEFAULT_WATCH_STABLE_SECONDS = 10
 
 
 def load_app_icon():
@@ -421,6 +424,32 @@ class DioptasBatchGUI(QMainWindow):
         self.watch_dir_btn.clicked.connect(self._browse_watch_dir)
         watch_layout.addWidget(self.watch_dir_btn)
         layout.addLayout(watch_layout)
+
+        idle_layout = QHBoxLayout()
+        idle_layout.addWidget(QLabel("Auto-stop idle (min):"))
+        self.watch_idle_timeout_spin = QSpinBox()
+        self.watch_idle_timeout_spin.setRange(1, 1440)
+        self.watch_idle_timeout_spin.setValue(DEFAULT_WATCH_INACTIVITY_TIMEOUT_MINUTES)
+        self.watch_idle_timeout_spin.setToolTip(
+            "Stop watch mode automatically after this many idle minutes with no new file activity."
+        )
+        self.watch_idle_timeout_spin.valueChanged.connect(lambda _value: self._save_settings())
+        idle_layout.addWidget(self.watch_idle_timeout_spin)
+        idle_layout.addStretch()
+        layout.addLayout(idle_layout)
+
+        settle_layout = QHBoxLayout()
+        settle_layout.addWidget(QLabel("File settle time (sec):"))
+        self.watch_stable_seconds_spin = QSpinBox()
+        self.watch_stable_seconds_spin.setRange(1, 3600)
+        self.watch_stable_seconds_spin.setValue(DEFAULT_WATCH_STABLE_SECONDS)
+        self.watch_stable_seconds_spin.setToolTip(
+            "Wait this many unchanged seconds before watch mode opens and processes a file."
+        )
+        self.watch_stable_seconds_spin.valueChanged.connect(lambda _value: self._save_settings())
+        settle_layout.addWidget(self.watch_stable_seconds_spin)
+        settle_layout.addStretch()
+        layout.addLayout(settle_layout)
         
         # Control buttons for watch mode
         control_layout = QHBoxLayout()
@@ -859,21 +888,48 @@ class DioptasBatchGUI(QMainWindow):
         self.cal_file_edit.setText(settings.value("cal_file", ""))
         self.mask_file_edit.setText(settings.value("mask_file", ""))
         self.watch_dir_edit.setText(settings.value("watch_dir", ""))
+        self.watch_idle_timeout_spin.setValue(
+            settings.value(
+                "watch_idle_timeout_minutes",
+                DEFAULT_WATCH_INACTIVITY_TIMEOUT_MINUTES,
+                type=int,
+            )
+        )
+        self.watch_stable_seconds_spin.setValue(
+            settings.value(
+                "watch_stable_seconds",
+                DEFAULT_WATCH_STABLE_SECONDS,
+                type=int,
+            )
+        )
         self.export_xy_cb.setChecked(settings.value("export_xy", False, type=bool))
         self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
         self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
+
+    def _commit_settings_inputs(self):
+        """Commit in-progress widget edits before saving settings."""
+        self.watch_idle_timeout_spin.interpretText()
+        self.watch_stable_seconds_spin.interpretText()
         
     def _save_settings(self):
         """Save current settings."""
+        self._commit_settings_inputs()
         settings = QSettings("Dioptas", "BatchProcessor")
         settings.setValue("cal_file", self.cal_file_edit.text())
         settings.setValue("mask_file", self.mask_file_edit.text())
         settings.setValue("watch_dir", self.watch_dir_edit.text())
+        settings.setValue("watch_idle_timeout_minutes", self.watch_idle_timeout_spin.value())
+        settings.setValue("watch_stable_seconds", self.watch_stable_seconds_spin.value())
         settings.setValue("export_xy", self.export_xy_cb.isChecked())
         settings.setValue("export_dat", self.export_dat_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
+        settings.sync()
+
+    def _current_watch_inactivity_timeout_seconds(self) -> int:
+        """Return the configured watch auto-stop timeout in seconds."""
+        return int(self.watch_idle_timeout_spin.value()) * 60
 
     def _dated_output_folder_name(self) -> str:
         """Return the per-day processed subfolder name."""
@@ -1068,7 +1124,10 @@ class DioptasBatchGUI(QMainWindow):
             self.completed_file_sets = 0
             
             # Initialize file watcher
-            self.file_watcher = FileWatcher(self.watch_dir_edit.text())
+            self.file_watcher = FileWatcher(
+                self.watch_dir_edit.text(),
+                stable_seconds=float(self.watch_stable_seconds_spin.value()),
+            )
             self.file_watcher.start()
             
             # Check for existing files in the directory and queue them
@@ -1121,10 +1180,28 @@ class DioptasBatchGUI(QMainWindow):
         self.status_label.setStyleSheet("color: gray;")
         
         self._append_log("=== Auto-processing stopped ===")
+
+    def _stop_watching_for_inactivity(self):
+        """Stop watch mode after a prolonged period with no new file activity."""
+        timeout_minutes = int(self.watch_idle_timeout_spin.value())
+        self._append_log(
+            f"AUTO-STOP: no new file activity detected for {timeout_minutes} minutes; stopping watch mode."
+        )
+        self._stop_watching()
         
     def _check_for_files(self):
         """Check for new complete files and process them."""
-        if not self.file_watcher or self.processing_thread is not None:
+        if not self.file_watcher:
+            return
+
+        if (
+            time.time() - self.file_watcher.get_last_activity_time()
+            >= self._current_watch_inactivity_timeout_seconds()
+        ):
+            self._stop_watching_for_inactivity()
+            return
+
+        if self.processing_thread is not None:
             return
             
         # Get completed files
@@ -1472,6 +1549,7 @@ class DioptasBatchGUI(QMainWindow):
         
     def closeEvent(self, event):
         """Handle window close."""
+        self._save_settings()
         if self.file_watcher:
             self._stop_watching()
         if self.processing_thread is not None:

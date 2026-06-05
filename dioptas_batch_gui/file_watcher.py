@@ -12,6 +12,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from queue import Queue
 import re
+import h5py
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +23,55 @@ class LambdaFileHandler(FileSystemEventHandler):
     Detects new .nxs files and adds them to processing queue.
     """
     
-    def __init__(self, file_queue: Queue, file_pattern=r'.*\.nxs$'):
+    def __init__(self, file_queue: Queue, file_pattern=r'.*\.nxs$', stable_seconds: float = 10.0):
         super().__init__()
         self.file_queue = file_queue
         self.file_pattern = re.compile(file_pattern)
         self.processed_files = set()
         self.pending_files = {}  # Track files being written
+        self.stable_seconds = float(stable_seconds)
+        self.last_activity_time = time.time()
+
+    def _mark_activity(self, timestamp: float | None = None):
+        """Record the most recent file activity seen by the watcher."""
+        self.last_activity_time = time.time() if timestamp is None else float(timestamp)
+
+    def _track_pending_file(self, file_path: str):
+        """Start or refresh tracking for a file that may still be growing."""
+        now = time.time()
+        self._mark_activity(now)
+        try:
+            stat = Path(file_path).stat()
+            size = stat.st_size
+            mtime = stat.st_mtime
+        except OSError:
+            size = None
+            mtime = None
+
+        tracked = self.pending_files.get(file_path)
+        if tracked is None:
+            self.pending_files[file_path] = {
+                "last_event": now,
+                "last_size": size,
+                "last_mtime": mtime,
+                "stable_since": None,
+            }
+            return
+
+        tracked["last_event"] = now
+        tracked["last_size"] = size
+        tracked["last_mtime"] = mtime
+        tracked["stable_since"] = None
+
+    def _file_contents_look_complete(self, file_path: str) -> bool:
+        """Return True once the file can be opened as a valid HDF5/Nexus file."""
+        try:
+            with h5py.File(file_path, "r") as handle:
+                handle.visit(lambda _: None)
+            return True
+        except (OSError, IOError, RuntimeError, ValueError) as exc:
+            logger.info(f"File not yet ready for HDF5 access: {file_path} ({exc})")
+            return False
         
     def on_created(self, event):
         """Called when a new file is created."""
@@ -41,9 +85,7 @@ class LambdaFileHandler(FileSystemEventHandler):
             return
             
         logger.info(f"Detected new file: {file_path}")
-        
-        # Add to pending files (wait for write completion)
-        self.pending_files[file_path] = time.time()
+        self._track_pending_file(file_path)
         
     def on_modified(self, event):
         """Called when a file is modified (during writing)."""
@@ -52,35 +94,71 @@ class LambdaFileHandler(FileSystemEventHandler):
             
         file_path = event.src_path
         
-        # Update timestamp for pending files
-        if file_path in self.pending_files:
-            self.pending_files[file_path] = time.time()
+        if self.file_pattern.match(file_path):
+            self._track_pending_file(file_path)
+
+    def on_moved(self, event):
+        """Called when a file is renamed into place."""
+        if event.is_directory:
+            return
+
+        file_path = event.dest_path
+        if self.file_pattern.match(file_path):
+            logger.info(f"Detected moved file: {file_path}")
+            self._track_pending_file(file_path)
             
     def check_complete_files(self):
         """
         Check if pending files have finished writing.
-        Files are considered complete if no modifications for 2 seconds.
+        Files are considered complete once their size and mtime have remained
+        unchanged for a sustained interval and the HDF5 container can be opened.
         """
         current_time = time.time()
         completed_files = []
-        
-        for file_path, last_modified in list(self.pending_files.items()):
-            # File hasn't been modified for 2 seconds
-            if current_time - last_modified > 2.0:
-                if os.path.exists(file_path) and file_path not in self.processed_files:
-                    # Verify file is readable
-                    try:
-                        with open(file_path, 'rb') as f:
-                            f.read(1)  # Try to read first byte
-                        completed_files.append(file_path)
-                        self.processed_files.add(file_path)
-                        logger.info(f"File ready for processing: {file_path}")
-                    except (IOError, OSError) as e:
-                        logger.warning(f"File not yet readable: {file_path}, {e}")
-                        continue
-                        
+
+        for file_path, tracked in list(self.pending_files.items()):
+            if file_path in self.processed_files:
                 del self.pending_files[file_path]
-                
+                continue
+
+            if not os.path.exists(file_path):
+                continue
+
+            try:
+                stat = Path(file_path).stat()
+            except OSError as exc:
+                logger.info(f"Could not stat pending file yet: {file_path} ({exc})")
+                continue
+
+            size = stat.st_size
+            mtime = stat.st_mtime
+
+            if size != tracked["last_size"] or mtime != tracked["last_mtime"]:
+                self._mark_activity(current_time)
+                tracked["last_size"] = size
+                tracked["last_mtime"] = mtime
+                tracked["last_event"] = current_time
+                tracked["stable_since"] = None
+                continue
+
+            if tracked["stable_since"] is None:
+                tracked["stable_since"] = current_time
+                continue
+
+            if current_time - tracked["stable_since"] < self.stable_seconds:
+                continue
+
+            if not self._file_contents_look_complete(file_path):
+                tracked["stable_since"] = None
+                continue
+
+            completed_files.append(file_path)
+            self.processed_files.add(file_path)
+            del self.pending_files[file_path]
+            logger.info(
+                f"File ready for processing after {self.stable_seconds:.0f}s stable window: {file_path}"
+            )
+                 
         return completed_files
 
 
@@ -89,18 +167,19 @@ class FileWatcher:
     Main file watcher class that monitors directory for new files.
     """
     
-    def __init__(self, watch_directory: str, file_pattern=r'.*\.(nxs|h5)$'):
+    def __init__(self, watch_directory: str, file_pattern=r'.*\.(nxs|h5)$', stable_seconds: float = 10.0):
         """
         Initialize file watcher.
         
         Args:
             watch_directory: Directory to monitor
             file_pattern: Regex pattern for files to watch (default: all .nxs or .h5 files)
+            stable_seconds: Time that size/mtime must remain unchanged before read access
         """
         self.watch_directory = Path(watch_directory)
         self.file_queue = Queue()
         self.observer = Observer()
-        self.event_handler = LambdaFileHandler(self.file_queue, file_pattern)
+        self.event_handler = LambdaFileHandler(self.file_queue, file_pattern, stable_seconds)
         self.is_running = False
         
         # Verify directory exists
@@ -144,6 +223,10 @@ class FileWatcher:
     def get_pending_count(self):
         """Get number of files currently being written."""
         return len(self.event_handler.pending_files)
+
+    def get_last_activity_time(self):
+        """Return the latest watcher-observed file activity timestamp."""
+        return self.event_handler.last_activity_time
         
     def clear_queue(self):
         """Clear the file queue."""
