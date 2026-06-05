@@ -338,7 +338,14 @@ class BatchProcessor:
     def _snapshot_output_name(self, base_name: str, image_index: int, n_images: int) -> str:
         """Return a unique output base name for one image in a file set."""
         if n_images > 1:
-            return f"{base_name}_{image_index + 1:03d}"
+            snapshot_suffix = f"{image_index + 1:03d}"
+            match = re.match(r"^(?P<prefix>.+)_(?P<trailing_index>\d+)$", base_name)
+            if match:
+                return (
+                    f"{match.group('prefix')}_{snapshot_suffix}_"
+                    f"{match.group('trailing_index')}"
+                )
+            return f"{base_name}_{snapshot_suffix}"
         return base_name
 
     def output_base_names_for_file_set(self, file_set: List[str]) -> List[str]:

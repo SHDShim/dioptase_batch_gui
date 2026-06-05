@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-05
+
+- Inserted snapshot numbers before trailing scan/index segments in output names.
+
 ## [0.0.9] - 2026-06-04
 
 - Added snapshot-specific output naming for multi-image HDF5/NXS files.
