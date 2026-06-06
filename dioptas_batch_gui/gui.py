@@ -86,6 +86,7 @@ class ProcessingThread(QThread):
                 self.apply_mask_to_cake,
                 progress_callback=self._progress_callback,
                 estimate_callback=self._estimate_callback,
+                should_continue=self._should_continue,
             )
             self.result_ready.emit(stats)
         except Exception as e:
@@ -98,6 +99,10 @@ class ProcessingThread(QThread):
     def _estimate_callback(self, num_points):
         """Forward integration-point estimates to the GUI."""
         self.integration_points_estimated.emit(int(num_points))
+
+    def _should_continue(self):
+        """Return False when the GUI has requested worker cancellation."""
+        return not self.isInterruptionRequested()
 
 
 class DioptasBatchGUI(QMainWindow):
@@ -405,6 +410,7 @@ class DioptasBatchGUI(QMainWindow):
         file_list_legend = QLabel(
             '<span style="color: #cc0000; font-weight: 600;">Red</span>: overwritten files | '
             '<span style="color: #008000; font-weight: 600;">Green</span>: skipped because output files already exist | '
+            '<span style="color: #808080; font-weight: 600;">Gray</span>: cancelled files | '
             "<span style='color: #FFFF00; font-weight: 600;'>Yellow</span>: latest processed | White: processed files | "
             "White italic: pending files"
         )
@@ -1328,17 +1334,36 @@ class DioptasBatchGUI(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to start: {str(e)}")
             logging.error(f"Failed to start: {e}")
             
-    def _stop_watching(self):
-        """Stop file watching."""
+    def _stop_watching(self, cancel_processing=True):
+        """Stop file watching and optionally cancel queued watch-mode processing."""
         if self.file_watcher:
             self.file_watcher.stop()
             self.file_watcher = None
             
         self.check_timer.stop()
+
+        if cancel_processing:
+            queued_files = list(self.pending_files)
+            if queued_files:
+                self.pending_files = []
+                self._record_cancelled_files(queued_files)
+                self._append_log(
+                    f"STOP: removed {len(queued_files)} queued watch file(s) from processing."
+                )
+
+            if self.processing_thread is not None:
+                self.processing_thread.requestInterruption()
+                self._append_log(
+                    "STOP: active processing will stop after the current image finishes."
+                )
         
         # Update UI
         self._set_watch_toggle_state(False)
-        self.status_label.setText("Status: Stopped")
+        self.status_label.setText(
+            "Status: Stopping active processing..."
+            if cancel_processing and self.processing_thread is not None
+            else "Status: Stopped"
+        )
         self.status_label.setStyleSheet("color: gray;")
         
         self._append_log("=== Auto-processing stopped ===")
@@ -1349,7 +1374,7 @@ class DioptasBatchGUI(QMainWindow):
         self._append_log(
             f"AUTO-STOP: no new file activity detected for {timeout_minutes} minutes; stopping watch mode."
         )
-        self._stop_watching()
+        self._stop_watching(cancel_processing=False)
         
     def _check_for_files(self):
         """Check for new complete files and process them."""
@@ -1377,6 +1402,10 @@ class DioptasBatchGUI(QMainWindow):
     def _process_next_batch(self):
         """Process the next batch of files."""
         if self.current_mode == "batch" and self.abort_requested:
+            return
+        if self.current_mode == "watch" and self.file_watcher is None:
+            self.pending_files = []
+            self._update_stats_label()
             return
         if not self.pending_files or self.processing_thread is not None:
             return
@@ -1500,6 +1529,10 @@ class DioptasBatchGUI(QMainWindow):
         """Mark overwritten source files in the side-panel history."""
         self._record_file_history_status(file_paths, "overwritten")
 
+    def _record_cancelled_files(self, file_paths):
+        """Mark cancelled source files in the side-panel history."""
+        self._record_file_history_status(file_paths, "cancelled")
+
     def _add_pending_files(self, file_paths):
         """Append pending source files to the side-panel history."""
         for file_path in file_paths:
@@ -1560,6 +1593,8 @@ class DioptasBatchGUI(QMainWindow):
                 path_label.setStyleSheet("color: #008000;")
             elif record["status"] == "overwritten":
                 path_label.setStyleSheet("color: #cc0000;")
+            elif record["status"] == "cancelled":
+                path_label.setStyleSheet("color: #808080;")
             available_width = max(
                 80,
                 self.file_list_table.columnWidth(0) - 16,
@@ -1577,6 +1612,8 @@ class DioptasBatchGUI(QMainWindow):
                 processed_item.setForeground(Qt.GlobalColor.darkGreen)
             elif record["status"] == "overwritten":
                 processed_item.setForeground(Qt.GlobalColor.red)
+            elif record["status"] == "cancelled":
+                processed_item.setForeground(Qt.GlobalColor.gray)
             elif is_latest:
                 path_label.setStyleSheet("color: #FFFF00;")
                 processed_item.setForeground(Qt.GlobalColor.yellow)
@@ -1604,6 +1641,8 @@ class DioptasBatchGUI(QMainWindow):
             f"Completed: {stats['processed']}/{stats['total_images']} images "
             f"(skipped: {stats.get('skipped', 0)})"
         )
+        if stats.get("cancelled"):
+            self._append_log("STOP: processing cancelled before completing this file set.")
         metadata_updates = (
             stats.get("metadata_created", 0)
             + stats.get("metadata_updated", 0)
@@ -1623,7 +1662,9 @@ class DioptasBatchGUI(QMainWindow):
             and stats.get("failed", 0) == 0
             and metadata_updates == 0
         )
-        if skipped_all:
+        if stats.get("cancelled"):
+            self._record_cancelled_files(self.current_file_set)
+        elif skipped_all:
             self._record_skipped_files(self.current_file_set)
             if self.current_mode in {"batch", "sequence"}:
                 current_name = Path(self.current_file_set[0]).stem if self.current_file_set else "-"
@@ -1641,6 +1682,12 @@ class DioptasBatchGUI(QMainWindow):
 
         if self.current_mode == "batch" and self.abort_requested:
             self._finalize_batch_abort()
+            return
+
+        if self.current_mode == "watch" and self.file_watcher is None:
+            self.pending_files = []
+            self.status_label.setText("Status: Stopped")
+            self._update_stats_label(stats)
             return
 
         # Process next batch if available

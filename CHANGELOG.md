@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-06
+
+- Stopped watch-mode queue processing when **Stop Watching** is pressed.
+- Added cancellation handling so active watch processing stops after the current image finishes.
+- Marked cancelled watch files in the file-history list.
+
 ## [0.5.0] - 2026-06-06
 
 - Added selectable output directories, including incremental updates to existing processed folders.

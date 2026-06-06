@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 """
+0.5.1 Stop watch-mode queue processing when Stop Watching is pressed.
 0.5.0 Add selected output directories and incremental HDF5 metadata exports.
 0.4.2 Add dbg launcher, latest-file highlighting, and GUI/log visibility improvements.
 0.4.1 Fix batch progress for multiple snapshot files and simplify progress/tab/button labels.

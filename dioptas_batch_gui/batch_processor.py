@@ -993,7 +993,8 @@ class BatchProcessor:
                         apply_mask_to_chi: bool = True,
                         apply_mask_to_cake: bool = False,
                         progress_callback=None,
-                        estimate_callback: Optional[Callable[[int], None]] = None) -> dict:
+                        estimate_callback: Optional[Callable[[int], None]] = None,
+                        should_continue: Optional[Callable[[], bool]] = None) -> dict:
         """
         Process all images in a Lambda file set.
         
@@ -1024,6 +1025,7 @@ class BatchProcessor:
             'metadata_created': 0,
             'metadata_updated': 0,
             'metadata_versioned': 0,
+            'cancelled': False,
         }
         
         # Get base name for output files
@@ -1041,6 +1043,13 @@ class BatchProcessor:
         
         # Process each image
         for img_idx in range(n_images):
+            if should_continue is not None and not should_continue():
+                stats['cancelled'] = True
+                logger.info(
+                    f"Processing cancelled before image {img_idx + 1}/{n_images} from {base_name}"
+                )
+                break
+
             if progress_callback:
                 progress_callback(img_idx + 1, n_images, f"Processing image {img_idx + 1}/{n_images}")
                 
@@ -1084,6 +1093,13 @@ class BatchProcessor:
 
             if n_images > 1:
                 logger.info("-" * 80)
+
+            if should_continue is not None and not should_continue():
+                stats['cancelled'] = True
+                logger.info(
+                    f"Processing cancelled after image {img_idx + 1}/{n_images} from {base_name}"
+                )
+                break
                 
         logger.info(
             f"Completed: {stats['processed']}/{n_images} images processed successfully "

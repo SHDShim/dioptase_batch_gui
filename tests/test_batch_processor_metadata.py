@@ -93,7 +93,7 @@ def _batch_processor_module(monkeypatch):
     return importlib.import_module("dioptas_batch_gui.batch_processor")
 
 
-def _write_hdf5(path):
+def _write_hdf5(path, n_images=1):
     with h5py.File(path, "w") as h5_file:
         h5_file.attrs["facility"] = "test beamline"
         entry = h5_file.create_group("entry")
@@ -101,7 +101,7 @@ def _write_hdf5(path):
         detector = entry.create_group("instrument/detector")
         detector.attrs["NX_class"] = "NXdetector"
         detector.create_dataset("distance", data=123.4)
-        detector.create_dataset("data", data=np.zeros((1, 4, 4)))
+        detector.create_dataset("data", data=np.zeros((n_images, 4, 4)))
         scan = entry.create_group("scan")
         scan.create_dataset("sample_x", data=np.array([1.0, 2.0]))
         scan.create_dataset("sample_y", data=np.array([3.0, 4.0]))
@@ -230,3 +230,27 @@ def test_existing_processed_outputs_receive_metadata_without_overwriting(tmp_pat
     assert result["metadata_action"] == "created"
     assert chi.read_text(encoding="utf-8") == before
     assert (param_dir / "scan_0001.metadata.v1.json").exists()
+
+
+def test_process_file_set_stops_when_cancellation_is_requested(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.h5"
+    _write_hdf5(source, n_images=3)
+    processor = _processor(tmp_path, monkeypatch)
+    processed_images = []
+    continue_checks = {"count": 0}
+
+    def fake_process_lambda_image(file_set, image_index, base_output_name, *args, **kwargs):
+        processed_images.append((image_index, base_output_name))
+        return {"success": True}
+
+    def should_continue():
+        continue_checks["count"] += 1
+        return len(processed_images) < 1
+
+    monkeypatch.setattr(processor, "process_lambda_image", fake_process_lambda_image)
+
+    stats = processor.process_file_set([str(source)], should_continue=should_continue)
+
+    assert stats["cancelled"] is True
+    assert stats["processed"] == 1
+    assert len(processed_images) == 1
