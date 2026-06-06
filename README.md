@@ -119,7 +119,7 @@ python -m dioptas_batch_gui
 4. Optionally select a **Mask File**.
 5. Configure integration points and azimuth bins.
 6. Choose the export options you want.
-7. Click **Start Watching** for automatic mode or **Process Selected Files** for manual batch mode.
+7. Click **Start Watching** for automatic mode or **Process** for manual batch mode.
 8. Click **Stop Watching** when finished with auto-processing.
 
 ## Output

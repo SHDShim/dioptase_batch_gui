@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 """
+0.4.1 Fix batch progress for multiple snapshot files and simplify progress/tab/button labels.
 0.4.0 Add configurable watch-mode file-settle and auto-stop timeouts, with HDF5 stabilization checks before processing.
 0.2.0 Add batch abort controls, source-local dated output folders, and darker button styles.
 0.1.0 Insert snapshot numbers before trailing scan/index segments in output names.

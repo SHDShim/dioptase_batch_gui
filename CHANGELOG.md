@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-06
+
+- Fixed cumulative batch progress for multiple snapshot HDF5/NXS file sets.
+- Simplified progress, tab, and process button labels.
+
 ## [0.1.0] - 2026-06-05
 
 - Inserted snapshot numbers before trailing scan/index segments in output names.

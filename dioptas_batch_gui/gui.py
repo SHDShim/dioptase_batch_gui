@@ -127,6 +127,8 @@ class DioptasBatchGUI(QMainWindow):
         self.requested_input_files = 0
         self.requested_file_sets = 0
         self.completed_file_sets = 0
+        self.requested_images = 0
+        self.completed_images = 0
         self.abort_requested = False
         
         # Setup logging
@@ -195,19 +197,19 @@ class DioptasBatchGUI(QMainWindow):
         batch_tab = QWidget()
         batch_layout = QVBoxLayout(batch_tab)
         self._create_batch_mode_ui(batch_layout)
-        self.mode_tabs.addTab(batch_tab, "Batch Mode (Manual)")
+        self.mode_tabs.addTab(batch_tab, "Batch Mode")
 
         # Sequence Mode Tab
         sequence_tab = QWidget()
         sequence_layout = QVBoxLayout(sequence_tab)
         self._create_sequence_mode_ui(sequence_layout)
-        self.mode_tabs.addTab(sequence_tab, "Sequence Mode (Manual)")
+        self.mode_tabs.addTab(sequence_tab, "Sequence Mode")
 
         # Watch Mode Tab
         watch_tab = QWidget()
         watch_layout = QVBoxLayout(watch_tab)
         self._create_watch_mode_ui(watch_layout)
-        self.mode_tabs.addTab(watch_tab, "Watch Mode (Auto)")
+        self.mode_tabs.addTab(watch_tab, "Watch Mode")
         
         left_layout.addWidget(self.mode_tabs)
         left_layout.addStretch(1)
@@ -352,7 +354,7 @@ class DioptasBatchGUI(QMainWindow):
         self.progress_bar = QProgressBar()
         progress_layout.addWidget(self.progress_bar)
         
-        self.stats_label = QLabel("Files processed: 0 | Pending: 0")
+        self.stats_label = QLabel("Pending files: 0")
         progress_layout.addWidget(self.stats_label)
         
         progress_group.setLayout(progress_layout)
@@ -568,7 +570,7 @@ class DioptasBatchGUI(QMainWindow):
 
         file_select_layout.addWidget(self.select_files_btn)
         file_select_layout.addWidget(self.clear_selection_btn)
-        self.process_batch_btn = QPushButton("Process Selected Files")
+        self.process_batch_btn = QPushButton("Process")
         self.process_batch_btn.clicked.connect(self._process_batch)
         self.process_batch_btn.setStyleSheet(
             "QPushButton { background-color: #6D0000; color: white; font-weight: bold; padding: 10px; }"
@@ -865,6 +867,8 @@ class DioptasBatchGUI(QMainWindow):
             self.requested_input_files = 1
             self.requested_file_sets = 1
             self.completed_file_sets = 0
+            self.requested_images = 0
+            self.completed_images = 0
             self.pending_files = [str(self.sequence_file_path)]
             self._update_sequence_controls()
             self._update_stats_label()
@@ -1073,6 +1077,8 @@ class DioptasBatchGUI(QMainWindow):
             self.requested_input_files = len(self.selected_files)
             self.requested_file_sets = len(file_groups)
             self.completed_file_sets = 0
+            self.requested_images = sum(self.processor.get_image_count(group) for group in file_groups)
+            self.completed_images = 0
 
             # Disable controls
             self._set_batch_mode_controls(True)
@@ -1122,6 +1128,8 @@ class DioptasBatchGUI(QMainWindow):
             self.requested_input_files = 0
             self.requested_file_sets = 0
             self.completed_file_sets = 0
+            self.requested_images = 0
+            self.completed_images = 0
             
             # Initialize file watcher
             self.file_watcher = FileWatcher(
@@ -1260,31 +1268,41 @@ class DioptasBatchGUI(QMainWindow):
         self._append_log(f"Starting file set: {Path(file_set[0]).stem}")
         self._append_log(f"Output directory: {output_dir}")
         if self.current_mode == "batch":
+            total_images = max(self.requested_images, 1)
+            self.progress_bar.setMaximum(total_images)
+            self.progress_bar.setValue(min(self.completed_images, total_images))
+            self.progress_bar.setFormat("%v/%m images")
+        else:
             self.progress_bar.setMaximum(1)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("%v/%m images")
-        else:
-            self.progress_bar.setMaximum(100)
-            self.progress_bar.setValue(0)
-            self.progress_bar.setFormat("%p%")
         self.status_label.setText(f"Status: Processing {Path(file_set[0]).stem}...")
         self._update_stats_label()
         
     def _update_progress(self, current, total, message):
         """Update progress bar."""
         if self.current_mode == "batch" and self.requested_file_sets:
-            self.progress_bar.setMaximum(max(total, 1))
-            self.progress_bar.setValue(current)
+            total_images = max(self.requested_images, total, 1)
+            progress_value = min(self.completed_images + current, total_images)
+            self.progress_bar.setMaximum(total_images)
+            self.progress_bar.setValue(progress_value)
+            self.progress_bar.setFormat("%v/%m images")
             current_set_idx = self.completed_file_sets + 1
             abort_suffix = " | abort queued" if self.abort_requested else ""
             self.status_label.setText(
                 f"Status: File set {current_set_idx}/{self.requested_file_sets} | {message}{abort_suffix}"
             )
         elif self.current_mode == "sequence":
+            self.progress_bar.setMaximum(max(total, 1))
+            self.progress_bar.setValue(current)
+            self.progress_bar.setFormat("%v/%m images")
             self.status_label.setText(
                 f"Status: Sequence {Path(self.current_file_set[0]).stem} | {message}"
             )
         else:
+            self.progress_bar.setMaximum(max(total, 1))
+            self.progress_bar.setValue(current)
+            self.progress_bar.setFormat("%v/%m images")
             self.status_label.setText(f"Status: {message}")
 
     def _update_integration_points_spinbox(self, num_points):
@@ -1404,13 +1422,17 @@ class DioptasBatchGUI(QMainWindow):
     def _processing_finished(self, stats):
         """Handle processing completion."""
         self.completed_file_sets += 1
+        self.completed_images += stats.get("total_images", 0)
         if self.current_mode == "batch":
-            self.progress_bar.setValue(0)
-            self.progress_bar.setFormat("%p%")
+            total_images = max(self.requested_images, self.completed_images, 1)
+            self.progress_bar.setMaximum(total_images)
+            self.progress_bar.setValue(min(self.completed_images, total_images))
+            self.progress_bar.setFormat("%v/%m images")
         else:
-            self.progress_bar.setMaximum(100)
-            self.progress_bar.setValue(100)
-            self.progress_bar.setFormat("%p%")
+            total_images = max(stats.get("total_images", 0), 1)
+            self.progress_bar.setMaximum(total_images)
+            self.progress_bar.setValue(total_images)
+            self.progress_bar.setFormat("%v/%m images")
         
         self._append_log(
             f"Completed: {stats['processed']}/{stats['total_images']} images "
@@ -1459,11 +1481,11 @@ class DioptasBatchGUI(QMainWindow):
     def _processing_error(self, error_msg):
         """Handle processing error."""
         if self.current_mode != "batch":
-            self.progress_bar.setMaximum(100)
+            self.progress_bar.setMaximum(1)
             self.progress_bar.setValue(0)
-            self.progress_bar.setFormat("%p%")
+            self.progress_bar.setFormat("%v/%m images")
         else:
-            self.progress_bar.setValue(0)
+            self.progress_bar.setValue(min(self.completed_images, self.progress_bar.maximum()))
         self._append_log(f"ERROR: {error_msg}")
         if self.current_mode == "batch" and self.abort_requested:
             self.status_label.setText("Status: Error occurred while abort was pending")
@@ -1545,7 +1567,7 @@ class DioptasBatchGUI(QMainWindow):
                 f"Pending files: {pending_count}"
             )
         else:
-            self.stats_label.setText(f"Files processed: 0 | Pending: {pending_count}")
+            self.stats_label.setText(f"Pending files: {pending_count}")
         
     def closeEvent(self, event):
         """Handle window close."""
