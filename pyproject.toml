@@ -34,6 +34,7 @@ dev = [
 ]
 
 [project.scripts]
+dbg = "dioptas_batch_gui.gui:main"
 dbgui = "dioptas_batch_gui.gui:main"
 dioptas-batch-gui = "dioptas_batch_gui.gui:main"
 dioptas_batch_gui = "dioptas_batch_gui.gui:main"
@@ -43,7 +44,7 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["dioptas_batch_gui*"]
+include = ["dioptas_batch_gui*", "dbg*"]
 
 [tool.setuptools.package-data]
 dioptas_batch_gui = ["assets/*.ico", "assets/*.icns"]

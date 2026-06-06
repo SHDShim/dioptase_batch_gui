@@ -750,6 +750,9 @@ class BatchProcessor:
                     stats['npy_files'].append(results['npy_file'])
             else:
                 stats['failed'] += 1
+
+            if n_images > 1:
+                logger.info("-" * 80)
                 
         logger.info(
             f"Completed: {stats['processed']}/{n_images} images processed successfully "

@@ -57,7 +57,7 @@ def main():
         print("✓ All required dependencies are installed!")
         print()
         print("You can now run the GUI with:")
-        print("  dbgui")
+        print("  dbg")
     else:
         print("✗ Some dependencies are missing.")
         print()

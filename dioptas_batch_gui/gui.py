@@ -106,7 +106,7 @@ class DioptasBatchGUI(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"Dioptas Bach GUI v{__version__}")
+        self.setWindowTitle(f"Dioptas Batch GUI v{__version__}")
         self.setGeometry(100, 100, 1500, 900)
         self._set_window_icon()
         
@@ -307,34 +307,39 @@ class DioptasBatchGUI(QMainWindow):
         checkbox_grid.setHorizontalSpacing(24)
         checkbox_grid.setVerticalSpacing(8)
 
-        self.export_chi_cb = QCheckBox("Export CHI files")
+        checkbox_grid.addWidget(QLabel("Export 1D Pattern:"), 0, 0)
+        self.export_chi_cb = QCheckBox("CHI")
         self.export_chi_cb.setChecked(True)
-        checkbox_grid.addWidget(self.export_chi_cb, 0, 0)
+        checkbox_grid.addWidget(self.export_chi_cb, 0, 1)
 
-        self.export_xy_cb = QCheckBox("Export XY files")
+        self.export_xy_cb = QCheckBox("XY")
         self.export_xy_cb.setChecked(False)
-        checkbox_grid.addWidget(self.export_xy_cb, 0, 1)
+        checkbox_grid.addWidget(self.export_xy_cb, 0, 2)
 
-        self.export_dat_cb = QCheckBox("Export DAT files")
+        self.export_dat_cb = QCheckBox("DAT")
         self.export_dat_cb.setChecked(False)
-        checkbox_grid.addWidget(self.export_dat_cb, 1, 0)
+        checkbox_grid.addWidget(self.export_dat_cb, 0, 3)
         
-        self.export_npy_cb = QCheckBox("Export Cake NPY Files")
+        checkbox_grid.addWidget(QLabel("Export 2D Cake:"), 1, 0)
+        self.export_npy_cb = QCheckBox("NPY")
         self.export_npy_cb.setChecked(True)
         checkbox_grid.addWidget(self.export_npy_cb, 1, 1)
 
-        self.apply_mask_to_chi_cb = QCheckBox("Apply mask to CHI")
+        checkbox_grid.addWidget(QLabel("Apply Mask:"), 2, 0)
+        self.apply_mask_to_chi_cb = QCheckBox("1D Pattern")
         self.apply_mask_to_chi_cb.setChecked(True)
-        checkbox_grid.addWidget(self.apply_mask_to_chi_cb, 2, 0)
+        checkbox_grid.addWidget(self.apply_mask_to_chi_cb, 2, 1)
 
-        self.apply_mask_to_cake_cb = QCheckBox("Apply mask to cake")
+        self.apply_mask_to_cake_cb = QCheckBox("2D Cake")
         self.apply_mask_to_cake_cb.setChecked(False)
-        checkbox_grid.addWidget(self.apply_mask_to_cake_cb, 2, 1)
+        checkbox_grid.addWidget(self.apply_mask_to_cake_cb, 2, 2)
+        checkbox_grid.setColumnStretch(4, 1)
         options_layout.addLayout(checkbox_grid)
 
         overwrite_layout = QHBoxLayout()
         self.overwrite_cb = QCheckBox("Overwrite existing files")
         self.overwrite_cb.setChecked(False)
+        self.overwrite_cb.setStyleSheet("QCheckBox { color: #cc0000; }")
         overwrite_layout.addWidget(self.overwrite_cb)
         overwrite_layout.addStretch()
         options_layout.addLayout(overwrite_layout)
@@ -381,7 +386,7 @@ class DioptasBatchGUI(QMainWindow):
         file_list_legend = QLabel(
             '<span style="color: #cc0000; font-weight: 600;">Red</span>: overwritten files | '
             '<span style="color: #008000; font-weight: 600;">Green</span>: skipped because output files already exist | '
-            "White: processed files | "
+            "<span style='color: #FFFF00; font-weight: 600;'>Yellow</span>: latest processed | White: processed files | "
             "White italic: pending files"
         )
         file_list_legend.setTextFormat(Qt.TextFormat.RichText)
@@ -427,8 +432,12 @@ class DioptasBatchGUI(QMainWindow):
         watch_layout.addWidget(self.watch_dir_btn)
         layout.addLayout(watch_layout)
 
-        idle_layout = QHBoxLayout()
-        idle_layout.addWidget(QLabel("Auto-stop idle (min):"))
+        combined_watch_layout = QHBoxLayout()
+        
+        # Idle timeout group
+        idle_group = QWidget()
+        idle_group.setLayout(QHBoxLayout())
+        idle_group.layout().addWidget(QLabel("Auto-stop idle (min):"))
         self.watch_idle_timeout_spin = QSpinBox()
         self.watch_idle_timeout_spin.setRange(1, 1440)
         self.watch_idle_timeout_spin.setValue(DEFAULT_WATCH_INACTIVITY_TIMEOUT_MINUTES)
@@ -436,12 +445,14 @@ class DioptasBatchGUI(QMainWindow):
             "Stop watch mode automatically after this many idle minutes with no new file activity."
         )
         self.watch_idle_timeout_spin.valueChanged.connect(lambda _value: self._save_settings())
-        idle_layout.addWidget(self.watch_idle_timeout_spin)
-        idle_layout.addStretch()
-        layout.addLayout(idle_layout)
-
-        settle_layout = QHBoxLayout()
-        settle_layout.addWidget(QLabel("File settle time (sec):"))
+        idle_group.layout().addWidget(self.watch_idle_timeout_spin)
+        combined_watch_layout.addWidget(idle_group)
+        combined_watch_layout.addSpacing(20)
+        
+        # Settle time group
+        settle_group = QWidget()
+        settle_group.setLayout(QHBoxLayout())
+        settle_group.layout().addWidget(QLabel("File settle time (sec):"))
         self.watch_stable_seconds_spin = QSpinBox()
         self.watch_stable_seconds_spin.setRange(1, 3600)
         self.watch_stable_seconds_spin.setValue(DEFAULT_WATCH_STABLE_SECONDS)
@@ -449,9 +460,10 @@ class DioptasBatchGUI(QMainWindow):
             "Wait this many unchanged seconds before watch mode opens and processes a file."
         )
         self.watch_stable_seconds_spin.valueChanged.connect(lambda _value: self._save_settings())
-        settle_layout.addWidget(self.watch_stable_seconds_spin)
-        settle_layout.addStretch()
-        layout.addLayout(settle_layout)
+        settle_group.layout().addWidget(self.watch_stable_seconds_spin)
+        combined_watch_layout.addWidget(settle_group)
+        combined_watch_layout.addStretch()
+        layout.addLayout(combined_watch_layout)
         
         # Control buttons for watch mode
         control_layout = QHBoxLayout()
@@ -539,16 +551,23 @@ class DioptasBatchGUI(QMainWindow):
             46,
         )
         self.sequence_select_btn.setFixedHeight(sequence_button_height)
+        self.sequence_select_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.sequence_prev_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.sequence_next_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.sequence_prev_btn.setFixedHeight(sequence_button_height)
         self.sequence_next_btn.setFixedHeight(sequence_button_height)
 
+        layout.addLayout(select_layout)
+        
+        # Navigation sorting options
+        sort_layout = QHBoxLayout()
         self.sequence_nav_name_rb = QRadioButton("Name")
         self.sequence_nav_name_rb.setChecked(True)
-        select_layout.addWidget(self.sequence_nav_name_rb)
+        sort_layout.addWidget(self.sequence_nav_name_rb)
         self.sequence_nav_time_rb = QRadioButton("Time")
-        select_layout.addWidget(self.sequence_nav_time_rb)
-        select_layout.addStretch()
-        layout.addLayout(select_layout)
+        sort_layout.addWidget(self.sequence_nav_time_rb)
+        sort_layout.addStretch()
+        layout.addLayout(sort_layout)
         layout.addStretch()
         
     def _create_batch_mode_ui(self, layout):
@@ -557,46 +576,61 @@ class DioptasBatchGUI(QMainWindow):
         layout.setSpacing(8)
 
         # File selection
-        file_select_layout = QHBoxLayout()
+        # Row 1: Select Files and Process
+        row1_layout = QHBoxLayout()
         self.select_files_btn = QPushButton("Select Files...")
         self.select_files_btn.clicked.connect(self._select_files)
-        self.clear_selection_btn = QPushButton("Clear Selection")
-        self.clear_selection_btn.clicked.connect(self._clear_selection)
-
         self.select_files_btn.setStyleSheet(
             "QPushButton { background-color: #145A1A; color: white; font-weight: bold; }"
         )
-        self.select_files_btn.setFixedHeight(self.clear_selection_btn.sizeHint().height())
-
-        file_select_layout.addWidget(self.select_files_btn)
-        file_select_layout.addWidget(self.clear_selection_btn)
+        
         self.process_batch_btn = QPushButton("Process")
         self.process_batch_btn.clicked.connect(self._process_batch)
         self.process_batch_btn.setStyleSheet(
             "QPushButton { background-color: #6D0000; color: white; font-weight: bold; padding: 10px; }"
         )
         self.process_batch_btn.setEnabled(False)
-        common_button_height = max(
-            self.select_files_btn.sizeHint().height(),
-            self.clear_selection_btn.sizeHint().height(),
-            self.process_batch_btn.sizeHint().height(),
-        )
-        self.select_files_btn.setFixedHeight(common_button_height)
-        self.clear_selection_btn.setFixedHeight(common_button_height)
-        self.process_batch_btn.setFixedHeight(common_button_height)
-        file_select_layout.addWidget(self.process_batch_btn)
-
+        
+        # Set buttons to stretch horizontally (equal weight)
+        self.select_files_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.process_batch_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        
+        row1_layout.addWidget(self.select_files_btn)
+        row1_layout.addWidget(self.process_batch_btn)
+        layout.addLayout(row1_layout)
+        
+        # Row 2: Clear Selection and Abort
+        row2_layout = QHBoxLayout()
+        self.clear_selection_btn = QPushButton("Clear Selection")
+        self.clear_selection_btn.clicked.connect(self._clear_selection)
+        
         self.abort_batch_btn = QPushButton("Abort")
         self.abort_batch_btn.clicked.connect(self._request_batch_abort)
         self.abort_batch_btn.setStyleSheet(
             "QPushButton { background-color: #ff9800; color: black; font-weight: bold; padding: 10px; }"
         )
-        self.abort_batch_btn.setFixedHeight(common_button_height)
         self.abort_batch_btn.setEnabled(False)
-        file_select_layout.addWidget(self.abort_batch_btn)
-
-        file_select_layout.addStretch()
-        layout.addLayout(file_select_layout)
+        
+        # Set buttons to stretch horizontally (equal weight)
+        self.clear_selection_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.abort_batch_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        
+        row2_layout.addWidget(self.clear_selection_btn)
+        row2_layout.addWidget(self.abort_batch_btn)
+        layout.addLayout(row2_layout)
+        
+        # Unified height for all buttons
+        common_button_height = max(
+            self.select_files_btn.sizeHint().height(),
+            self.process_batch_btn.sizeHint().height(),
+            self.clear_selection_btn.sizeHint().height(),
+            self.abort_batch_btn.sizeHint().height(),
+            46,
+        )
+        self.select_files_btn.setFixedHeight(common_button_height)
+        self.process_batch_btn.setFixedHeight(common_button_height)
+        self.clear_selection_btn.setFixedHeight(common_button_height)
+        self.abort_batch_btn.setFixedHeight(common_button_height)
 
     def _set_batch_mode_controls(self, is_processing):
         """Update batch-mode controls for the current processing state."""
@@ -641,6 +675,9 @@ class DioptasBatchGUI(QMainWindow):
         
     def _append_log(self, message):
         """Append message to log console."""
+        if self._is_warning_or_error_log(message):
+            self._append_colored_log(message, "#cc0000")
+            return
         if "OVERWRITE:" in message:
             self._append_colored_log(message, "#cc0000")
             return
@@ -650,6 +687,13 @@ class DioptasBatchGUI(QMainWindow):
         self.log_console.append(message)
         self.log_console.verticalScrollBar().setValue(
             self.log_console.verticalScrollBar().maximum()
+        )
+
+    @staticmethod
+    def _is_warning_or_error_log(message):
+        """Return True when a log line should draw attention as an alert."""
+        return bool(
+            re.search(r"(^|\s-\s)(WARNING|ERROR|CRITICAL)(\s-|:)", message)
         )
 
     def _append_colored_log(self, message, color):
@@ -990,6 +1034,14 @@ class DioptasBatchGUI(QMainWindow):
         if dir_path:
             self.watch_dir_edit.setText(dir_path)
             self._save_settings()
+            logging.warning(
+                "Selected watch directory: %s. Make sure this directory is not "
+                "being watched by another dioptas-batch-gui instance. If "
+                "dioptas-batch-gui is watching this directory from another "
+                "computer, configure only one computer to watch the directory "
+                "to avoid unsafe duplicate processing.",
+                dir_path,
+            )
             
     def _browse_output_dir(self):
         """Output directories are assigned automatically from source-file locations."""
@@ -1409,11 +1461,16 @@ class DioptasBatchGUI(QMainWindow):
             )
             path_label.setText(elided_text)
 
+            is_latest = (row == len(self.file_history_records) - 1) and \
+                        (record["status"] not in ("pending", "skipped", "overwritten"))
             processed_item = QTableWidgetItem(record["completed_at"])
             if record["status"] == "skipped":
                 processed_item.setForeground(Qt.GlobalColor.darkGreen)
             elif record["status"] == "overwritten":
                 processed_item.setForeground(Qt.GlobalColor.red)
+            elif is_latest:
+                path_label.setStyleSheet("color: #FFFF00;")
+                processed_item.setForeground(Qt.GlobalColor.yellow)
             self.file_list_table.setCellWidget(row, 0, path_label)
             self.file_list_table.setItem(row, 1, processed_item)
 
@@ -1438,6 +1495,7 @@ class DioptasBatchGUI(QMainWindow):
             f"Completed: {stats['processed']}/{stats['total_images']} images "
             f"(skipped: {stats.get('skipped', 0)})"
         )
+        self._append_log("=" * 80)
         skipped_all = (
             stats.get("processed", 0) > 0
             and stats.get("processed", 0) == stats.get("skipped", 0)

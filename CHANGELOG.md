@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-06
+
+- Added `dbg` as the preferred short command and `python -m dbg` launcher while preserving existing entry points.
+- Highlighted the latest processed file in the file-history list.
+- Improved batch and watch-mode control layout and status-log visibility.
+
 ## [0.4.1] - 2026-06-06
 
 - Fixed cumulative batch progress for multiple snapshot HDF5/NXS file sets.

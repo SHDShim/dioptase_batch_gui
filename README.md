@@ -22,6 +22,9 @@ dioptas_batch_gui/
 │   ├── gui.py
 │   ├── batch_processor.py
 │   └── file_watcher.py
+├── dbg/
+│   ├── __init__.py
+│   └── __main__.py
 ├── check_dependencies.py
 ├── pyproject.toml
 ├── requirements.txt
@@ -91,21 +94,24 @@ conda activate dioptas
 ```
 
 ```bash
+dbg
+```
+
+Compatibility aliases:
+
+```bash
 dbgui
-```
-or
-
-```
 dioptas_batch_gui
-```
-
-or
-
-```
 dioptas-batch-gui
 ```
 
 For a local checkout, you can also launch the app directly:
+
+```bash
+python -m dbg
+```
+
+or:
 
 ```bash
 python -m dioptas_batch_gui
