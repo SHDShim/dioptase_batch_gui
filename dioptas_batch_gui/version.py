@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 """
+0.5.0 Add selected output directories and incremental HDF5 metadata exports.
 0.4.2 Add dbg launcher, latest-file highlighting, and GUI/log visibility improvements.
 0.4.1 Fix batch progress for multiple snapshot files and simplify progress/tab/button labels.
 0.4.0 Add configurable watch-mode file-settle and auto-stop timeouts, with HDF5 stabilization checks before processing.

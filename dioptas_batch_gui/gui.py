@@ -219,9 +219,27 @@ class DioptasBatchGUI(QMainWindow):
         config_layout = QVBoxLayout()
         
         # Output directory
-        output_label = QLabel("Output Directory (Auto):")
+        output_label = QLabel("Output Directory:")
         output_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         config_layout.addWidget(output_label)
+
+        output_mode_layout = QHBoxLayout()
+        self.output_auto_rb = QRadioButton("Auto")
+        self.output_auto_rb.setChecked(True)
+        self.output_auto_rb.setToolTip(
+            "Use <source folder>/processed-YYYY-MM-DD for each processed file set."
+        )
+        self.output_custom_rb = QRadioButton("Existing directory")
+        self.output_custom_rb.setToolTip(
+            "Write missing products into a selected processed output directory."
+        )
+        self.output_auto_rb.toggled.connect(self._on_output_mode_changed)
+        self.output_custom_rb.toggled.connect(self._on_output_mode_changed)
+        output_mode_layout.addWidget(self.output_auto_rb)
+        output_mode_layout.addWidget(self.output_custom_rb)
+        output_mode_layout.addStretch()
+        config_layout.addLayout(output_mode_layout)
+
         output_layout = QHBoxLayout()
         self.output_dir_edit = QLineEdit()
         self.output_dir_edit.setReadOnly(True)
@@ -232,10 +250,11 @@ class DioptasBatchGUI(QMainWindow):
             "Processed files are written to a dated subfolder inside each source file directory."
         )
         output_layout.addWidget(self.output_dir_edit)
-        self.output_dir_btn = QPushButton("Auto")
+        self.output_dir_btn = QPushButton("Browse...")
+        self.output_dir_btn.clicked.connect(self._browse_output_dir)
         self.output_dir_btn.setEnabled(False)
         self.output_dir_btn.setToolTip(
-            "Output folders are assigned automatically per processed file set."
+            "Select an existing processed output directory for incremental updates."
         )
         output_layout.addWidget(self.output_dir_btn)
         config_layout.addLayout(output_layout)
@@ -892,7 +911,7 @@ class DioptasBatchGUI(QMainWindow):
             mask_file = self.mask_file_edit.text() if self.mask_file_edit.text() else None
             self.processor = BatchProcessor(
                 calibration_file=self.cal_file_edit.text(),
-                output_directory=self.sequence_file_path.parent,
+                output_directory=self._output_directory_for_path(self.sequence_file_path),
                 mask_file=mask_file,
                 num_points=1,
                 cake_azimuth_points=FIXED_AZIMUTH_BINS,
@@ -954,6 +973,12 @@ class DioptasBatchGUI(QMainWindow):
         self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
         self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
+        output_mode = settings.value("output_mode", "auto")
+        selected_output_dir = settings.value("selected_output_dir", "")
+        self.output_dir_edit.setText(selected_output_dir)
+        self.output_custom_rb.setChecked(output_mode == "custom")
+        self.output_auto_rb.setChecked(output_mode != "custom")
+        self._on_output_mode_changed()
 
     def _commit_settings_inputs(self):
         """Commit in-progress widget edits before saving settings."""
@@ -973,6 +998,9 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("export_dat", self.export_dat_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
+        settings.setValue("output_mode", "custom" if self.output_custom_rb.isChecked() else "auto")
+        if self.output_custom_rb.isChecked():
+            settings.setValue("selected_output_dir", self.output_dir_edit.text())
         settings.sync()
 
     def _current_watch_inactivity_timeout_seconds(self) -> int:
@@ -984,7 +1012,9 @@ class DioptasBatchGUI(QMainWindow):
         return f"processed-{datetime.now().strftime('%Y-%m-%d')}"
 
     def _output_directory_for_path(self, file_path: str | Path) -> Path:
-        """Return the dated output directory for one source file."""
+        """Return the configured output directory for one source file."""
+        if self.output_custom_rb.isChecked() and self.output_dir_edit.text():
+            return Path(self.output_dir_edit.text()).expanduser().resolve()
         return Path(file_path).expanduser().resolve().parent / self._dated_output_folder_name()
 
     def _output_directory_for_file_set(self, file_set) -> Path:
@@ -993,17 +1023,20 @@ class DioptasBatchGUI(QMainWindow):
 
     def _set_output_dir_preview(self, output_dir: Path | None):
         """Show the active or preview output directory in the GUI."""
+        if output_dir is None and self.output_custom_rb.isChecked():
+            return
         self.output_dir_edit.setText("" if output_dir is None else str(output_dir))
 
     def _set_output_dir_preview_for_paths(self, file_paths):
-        """Preview the dated output directory for the first selected file path."""
+        """Preview the configured output directory for the first selected file path."""
         if not file_paths:
-            self._set_output_dir_preview(None)
+            if self.output_auto_rb.isChecked():
+                self._set_output_dir_preview(None)
             return
         self._set_output_dir_preview(self._output_directory_for_path(file_paths[0]))
 
     def _apply_output_directory_for_file_set(self, file_set) -> Path:
-        """Point the processor at the dated source-local output directory."""
+        """Point the processor at the configured output directory."""
         output_dir = self._output_directory_for_file_set(file_set)
         self.processor.set_output_directory(output_dir)
         self._set_output_dir_preview(output_dir)
@@ -1027,6 +1060,22 @@ class DioptasBatchGUI(QMainWindow):
         for base_name in self.processor.output_base_names_for_file_set(file_set):
             selected_paths.extend(self._selected_1d_output_paths(base_name, output_dir))
         return selected_paths
+
+    def _required_output_paths_for_file_set(self, file_set):
+        """Return all selected durable outputs expected for a file set."""
+        required_paths = []
+        output_dir = self._output_directory_for_file_set(file_set)
+        for base_name in self.processor.output_base_names_for_file_set(file_set):
+            required_paths.extend(self._selected_1d_output_paths(base_name, output_dir))
+            param_dir = output_dir / f"{base_name}-param"
+            if self.export_npy_cb.isChecked():
+                required_paths.extend([
+                    param_dir / f"{base_name}.int.cake.npy",
+                    param_dir / f"{base_name}.tth.cake.npy",
+                    param_dir / f"{base_name}.azi.cake.npy",
+                ])
+            required_paths.append(param_dir / f"{base_name}.metadata.v1.json")
+        return required_paths
     
     def _browse_watch_dir(self):
         """Browse for watch directory."""
@@ -1044,12 +1093,50 @@ class DioptasBatchGUI(QMainWindow):
             )
             
     def _browse_output_dir(self):
-        """Output directories are assigned automatically from source-file locations."""
-        QMessageBox.information(
+        """Browse for an existing processed output directory."""
+        start_dir = self.output_dir_edit.text() or self.watch_dir_edit.text()
+        dir_path = QFileDialog.getExistingDirectory(
             self,
-            "Automatic Output Directory",
+            "Select Existing Processed Output Directory",
+            start_dir,
+        )
+        if not dir_path:
+            return
+        self.output_custom_rb.setChecked(True)
+        self.output_dir_edit.setText(dir_path)
+        self._save_settings()
+        logging.info(
+            "Selected output directory for incremental updates: %s",
+            dir_path,
+        )
+
+    def _on_output_mode_changed(self):
+        """Update output-directory controls for auto or selected-directory mode."""
+        custom_mode = self.output_custom_rb.isChecked()
+        self.output_dir_btn.setEnabled(custom_mode)
+        if custom_mode:
+            self.output_dir_edit.setPlaceholderText(
+                "Select an existing processed output directory"
+            )
+            self.output_dir_edit.setToolTip(
+                "Missing products will be added here without replacing existing files "
+                "unless overwrite is enabled."
+            )
+            return
+
+        self.output_dir_edit.setPlaceholderText(
+            "Automatically set to <source folder>/processed-YYYY-MM-DD"
+        )
+        self.output_dir_edit.setToolTip(
             "Processed files are written to a dated subfolder inside each source file directory."
         )
+        preview_paths = []
+        if self.current_mode == "sequence" and self.sequence_file_path is not None:
+            preview_paths = [str(self.sequence_file_path)]
+        elif self.selected_files:
+            preview_paths = self.selected_files
+        self._set_output_dir_preview_for_paths(preview_paths)
+        self._save_settings()
             
     def _browse_cal_file(self):
         """Browse for calibration file."""
@@ -1080,6 +1167,17 @@ class DioptasBatchGUI(QMainWindow):
         if not Path(self.cal_file_edit.text()).exists():
             QMessageBox.warning(self, "Configuration Error", "Calibration file does not exist")
             return False
+        if self.output_custom_rb.isChecked():
+            if not self.output_dir_edit.text():
+                QMessageBox.warning(self, "Configuration Error", "Please select an output directory")
+                return False
+            if not Path(self.output_dir_edit.text()).expanduser().exists():
+                QMessageBox.warning(
+                    self,
+                    "Configuration Error",
+                    "Selected output directory does not exist"
+                )
+                return False
         return True
         
     def _process_batch(self):
@@ -1098,7 +1196,7 @@ class DioptasBatchGUI(QMainWindow):
             mask_file = self.mask_file_edit.text() if self.mask_file_edit.text() else None
             self.processor = BatchProcessor(
                 calibration_file=self.cal_file_edit.text(),
-                output_directory=Path(self.selected_files[0]).expanduser().resolve().parent,
+                output_directory=self._output_directory_for_path(self.selected_files[0]),
                 mask_file=mask_file,
                 num_points=1,
                 cake_azimuth_points=FIXED_AZIMUTH_BINS,
@@ -1163,7 +1261,11 @@ class DioptasBatchGUI(QMainWindow):
             self._set_output_dir_preview(None)
             self.processor = BatchProcessor(
                 calibration_file=self.cal_file_edit.text(),
-                output_directory=Path(self.watch_dir_edit.text()).expanduser().resolve(),
+                output_directory=(
+                    Path(self.output_dir_edit.text()).expanduser().resolve()
+                    if self.output_custom_rb.isChecked()
+                    else Path(self.watch_dir_edit.text()).expanduser().resolve()
+                ),
                 mask_file=mask_file,
                 num_points=1,
                 cake_azimuth_points=FIXED_AZIMUTH_BINS,
@@ -1200,8 +1302,8 @@ class DioptasBatchGUI(QMainWindow):
                 # Check which file sets haven't been processed yet.
                 unprocessed_files = []
                 for file_set in self.processor.group_lambda_files(existing_files):
-                    required_1d_paths = self._selected_1d_output_paths_for_file_set(file_set)
-                    if not required_1d_paths or not all(path.exists() for path in required_1d_paths):
+                    required_paths = self._required_output_paths_for_file_set(file_set)
+                    if not required_paths or not all(path.exists() for path in required_paths):
                         unprocessed_files.extend(file_set)
                 
                 if unprocessed_files:
@@ -1433,8 +1535,16 @@ class DioptasBatchGUI(QMainWindow):
         ]
         self._render_file_history()
 
+    def _latest_processed_history_row(self):
+        """Return the row index for the most recent processed file, if any."""
+        for row in range(len(self.file_history_records) - 1, -1, -1):
+            if self.file_history_records[row]["status"] == "processed":
+                return row
+        return None
+
     def _render_file_history(self):
         """Render the side-panel file history as a two-column table."""
+        latest_processed_row = self._latest_processed_history_row()
         self.file_list_table.setRowCount(len(self.file_history_records))
         for row, record in enumerate(self.file_history_records):
             path_label = QLabel()
@@ -1461,8 +1571,7 @@ class DioptasBatchGUI(QMainWindow):
             )
             path_label.setText(elided_text)
 
-            is_latest = (row == len(self.file_history_records) - 1) and \
-                        (record["status"] not in ("pending", "skipped", "overwritten"))
+            is_latest = row == latest_processed_row
             processed_item = QTableWidgetItem(record["completed_at"])
             if record["status"] == "skipped":
                 processed_item.setForeground(Qt.GlobalColor.darkGreen)
@@ -1495,11 +1604,24 @@ class DioptasBatchGUI(QMainWindow):
             f"Completed: {stats['processed']}/{stats['total_images']} images "
             f"(skipped: {stats.get('skipped', 0)})"
         )
+        metadata_updates = (
+            stats.get("metadata_created", 0)
+            + stats.get("metadata_updated", 0)
+            + stats.get("metadata_versioned", 0)
+        )
+        if metadata_updates:
+            self._append_log(
+                "Metadata updates: "
+                f"created={stats.get('metadata_created', 0)}, "
+                f"updated={stats.get('metadata_updated', 0)}, "
+                f"versioned={stats.get('metadata_versioned', 0)}"
+            )
         self._append_log("=" * 80)
         skipped_all = (
             stats.get("processed", 0) > 0
             and stats.get("processed", 0) == stats.get("skipped", 0)
             and stats.get("failed", 0) == 0
+            and metadata_updates == 0
         )
         if skipped_all:
             self._record_skipped_files(self.current_file_set)

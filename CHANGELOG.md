@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-06
+
+- Added selectable output directories, including incremental updates to existing processed folders.
+- Added schema-versioned recursive HDF5 metadata export under each `*-param` folder.
+- Preserved existing processed outputs by default while filling missing metadata products.
+- Added tests for selected output directories, metadata creation, additive updates, and non-overwrite behavior.
+
 ## [0.4.2] - 2026-06-06
 
 - Added `dbg` as the preferred short command and `python -m dbg` launcher while preserving existing entry points.

@@ -120,7 +120,9 @@ python -m dioptas_batch_gui
 ## Basic Workflow
 
 1. Set **Watch Directory** or switch to **Batch Mode** and select files manually.
-2. Set **Output Directory**.
+2. Choose the output mode:
+   - **Auto** uses `<source folder>/processed-YYYY-MM-DD`.
+   - **Existing directory** writes missing products into a selected processed output folder.
 3. Select the **Calibration File** (`.poni`).
 4. Optionally select a **Mask File**.
 5. Configure integration points and azimuth bins.
@@ -136,6 +138,7 @@ For each processed dataset, the app exports:
 - `<base_name>-param/<base_name>.int.cake.npy`
 - `<base_name>-param/<base_name>.tth.cake.npy`
 - `<base_name>-param/<base_name>.azi.cake.npy`
+- `<base_name>-param/<base_name>.metadata.v1.json`
 
 For HDF5/NXS files containing multiple snapshot images, outputs use a
 one-based snapshot suffix in the output stem and parameter directory name.
@@ -155,8 +158,23 @@ output_directory/
     ├── <base_name>.int.cake.npy
     ├── <base_name>.tth.cake.npy
     ├── <base_name>.azi.cake.npy
+    ├── <base_name>.metadata.v1.json
     └── <calibration>.poni
 ```
+
+If the selected output directory already exists, the app inspects the existing
+products and writes only missing outputs when overwrite is disabled. Existing
+CHI/XY/DAT/NPY products are left untouched. Missing HDF5 metadata exports are
+added under the corresponding `*-param` folder. If an older metadata JSON file
+is structurally compatible, missing top-level sections are added conservatively;
+if compatibility is uncertain, a versioned metadata JSON file is written instead
+of replacing the old file.
+
+The metadata JSON uses `schema_version: "1.0"` and recursively records HDF5
+file attributes, groups, datasets, dataset attributes, group attributes,
+`NX_class` values, source paths, provenance, and a small canonical index for
+common coordinates and detector/instrument/scan paths. Large datasets are
+described by shape and dtype rather than duplicated inline.
 
 ## License
 

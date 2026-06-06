@@ -8,9 +8,11 @@ import os
 import re
 import logging
 import numpy as np
+import json
 from pathlib import Path
 from glob import glob
-from typing import Callable, List, Tuple, Optional
+from datetime import datetime, timezone
+from typing import Any, Callable, List, Tuple, Optional
 import h5py
 
 # Dioptas imports
@@ -18,6 +20,10 @@ from dioptas.model.Configuration import Configuration
 from dioptas.model.loader import LambdaLoader
 
 logger = logging.getLogger(__name__)
+
+METADATA_SCHEMA_VERSION = "1.0"
+METADATA_FILE_SUFFIX = ".metadata.v1.json"
+MAX_INLINE_DATASET_ITEMS = 10000
 
 
 class BatchProcessor:
@@ -74,8 +80,12 @@ class BatchProcessor:
     def set_output_directory(self, output_directory: str | Path):
         """Update the output directory used for subsequent exports."""
         self.output_directory = Path(output_directory).expanduser().resolve()
+        existed = self.output_directory.exists()
         self.output_directory.mkdir(parents=True, exist_ok=True)
-        logger.info(f"Output: {self.output_directory}")
+        if existed:
+            logger.info(f"Output: {self.output_directory} (existing directory; incremental update mode)")
+        else:
+            logger.info(f"Output: {self.output_directory}")
 
     def _cake_radial_points(self) -> int:
         """CAKE radial bins match the 1D integration point count."""
@@ -378,11 +388,293 @@ class BatchProcessor:
             "tth_path": tth_path,
             "azi_path": azi_path,
             "poni_dest": cake_folder / Path(self.calibration_file).name,
+            "metadata_path": cake_folder / f"{base_output_name}{METADATA_FILE_SUFFIX}",
         }
 
     def _log_overwrite(self, label: str, path: Path):
         """Log an explicit overwrite event for GUI highlighting."""
         logger.info(f"OVERWRITE: {label}: {path.resolve()}")
+
+    def inspect_existing_output(self, base_output_name: str) -> dict:
+        """Return an inventory of existing outputs for one output base name."""
+        paths = self._build_output_paths(base_output_name)
+        cake_folder = paths["cake_folder"]
+        metadata_files = sorted(cake_folder.glob("*.metadata*.json")) if cake_folder.exists() else []
+        version_markers = []
+        if cake_folder.exists():
+            for pattern in ("*version*", "*.version", "*.schema*"):
+                version_markers.extend(cake_folder.glob(pattern))
+
+        return {
+            "output_directory": self.output_directory,
+            "param_folder": cake_folder,
+            "param_folder_exists": cake_folder.exists(),
+            "metadata_path": paths["metadata_path"],
+            "metadata_exists": paths["metadata_path"].exists(),
+            "metadata_files": metadata_files,
+            "version_markers": sorted(set(version_markers)),
+            "processing_artifacts": {
+                "chi": paths["chi_path"].exists(),
+                "xy": paths["xy_path"].exists(),
+                "dat": paths["dat_path"].exists(),
+                "cake_intensity": paths["int_path"].exists(),
+                "cake_two_theta": paths["tth_path"].exists(),
+                "cake_azimuth": paths["azi_path"].exists(),
+                "poni": paths["poni_dest"].exists(),
+            },
+        }
+
+    @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        """Convert common HDF5/numpy values to JSON-compatible values."""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            if value.shape == ():
+                return BatchProcessor._json_safe_value(value.item())
+            return [BatchProcessor._json_safe_value(item) for item in value.tolist()]
+        if isinstance(value, (list, tuple)):
+            return [BatchProcessor._json_safe_value(item) for item in value]
+        if isinstance(value, dict):
+            return {str(key): BatchProcessor._json_safe_value(item) for key, item in value.items()}
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    @classmethod
+    def _attrs_to_dict(cls, attrs) -> dict:
+        """Return HDF5 attributes as a JSON-compatible dictionary."""
+        result = {}
+        for key in attrs.keys():
+            try:
+                result[str(key)] = cls._json_safe_value(attrs[key])
+            except Exception as exc:
+                result[str(key)] = {"error": f"Could not serialize attribute: {exc}"}
+        return result
+
+    @staticmethod
+    def _dataset_size(dataset) -> int:
+        """Return total dataset item count, treating scalar datasets as one item."""
+        shape = tuple(dataset.shape)
+        if not shape:
+            return 1
+        return int(np.prod(shape))
+
+    @classmethod
+    def _dataset_value_summary(cls, path: str, dataset) -> dict:
+        """Return JSON-safe dataset metadata, inlining only modest-size values."""
+        item_count = cls._dataset_size(dataset)
+        summary = {
+            "dtype": str(dataset.dtype),
+            "shape": list(dataset.shape),
+            "ndim": int(dataset.ndim),
+            "size": item_count,
+        }
+        if item_count <= MAX_INLINE_DATASET_ITEMS:
+            try:
+                summary["value"] = cls._json_safe_value(dataset[()])
+            except Exception as exc:
+                summary["value_error"] = str(exc)
+        else:
+            summary["value_omitted"] = (
+                "dataset is too large for inline metadata export; "
+                f"limit={MAX_INLINE_DATASET_ITEMS}"
+            )
+        if path.lower().endswith("/data") and dataset.ndim >= 2:
+            summary["role_hint"] = "detector_data"
+        return summary
+
+    @classmethod
+    def _hdf5_node_to_dict(cls, name: str, obj) -> dict:
+        """Serialize one HDF5 object without discarding unknown metadata fields."""
+        path = "/" if name == "" else f"/{name}"
+        attrs = cls._attrs_to_dict(obj.attrs)
+        node = {
+            "path": path,
+            "name": Path(path).name if path != "/" else "/",
+            "attrs": attrs,
+        }
+        nx_class = attrs.get("NX_class")
+        if nx_class is not None:
+            node["NX_class"] = nx_class
+
+        if isinstance(obj, h5py.Dataset):
+            node["type"] = "dataset"
+            node["dataset"] = cls._dataset_value_summary(path, obj)
+        elif isinstance(obj, h5py.Group):
+            node["type"] = "group"
+        else:
+            node["type"] = type(obj).__name__
+        return node
+
+    @classmethod
+    def _canonical_metadata_fields(cls, nodes: dict) -> dict:
+        """
+        Build a small alias index for common downstream consumers.
+        The full HDF5 tree remains the authoritative generic structure.
+        """
+        canonical = {}
+        for path, node in nodes.items():
+            lower_path = path.lower()
+            if node.get("type") != "dataset":
+                continue
+            value = node.get("dataset", {}).get("value")
+            if value is None:
+                continue
+            name = path.rsplit("/", 1)[-1].lower()
+            if name in {"x", "x_position", "sample_x", "map_x"}:
+                canonical.setdefault("coordinates", {}).setdefault("x", []).append(
+                    {"path": path, "value": value}
+                )
+            elif name in {"y", "y_position", "sample_y", "map_y"}:
+                canonical.setdefault("coordinates", {}).setdefault("y", []).append(
+                    {"path": path, "value": value}
+                )
+            elif "detector" in lower_path:
+                canonical.setdefault("detector", []).append(path)
+            elif "instrument" in lower_path:
+                canonical.setdefault("instrument", []).append(path)
+            elif "scan" in lower_path:
+                canonical.setdefault("scan", []).append(path)
+            elif "snapshot" in lower_path:
+                canonical.setdefault("snapshots", []).append(path)
+        return canonical
+
+    @classmethod
+    def _export_hdf5_file_metadata(cls, file_path: str | Path) -> dict:
+        """Recursively export HDF5 metadata and modest-size datasets from one file."""
+        path = Path(file_path).expanduser().resolve()
+        stat = path.stat()
+        with h5py.File(path, "r") as h5_file:
+            nodes = {"/": cls._hdf5_node_to_dict("", h5_file)}
+
+            def visitor(name, obj):
+                nodes[f"/{name}"] = cls._hdf5_node_to_dict(name, obj)
+
+            h5_file.visititems(visitor)
+
+        return {
+            "path": str(path),
+            "name": path.name,
+            "size_bytes": stat.st_size,
+            "mtime_utc": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "hdf5": {
+                "nodes": nodes,
+                "canonical": cls._canonical_metadata_fields(nodes),
+            },
+        }
+
+    @classmethod
+    def build_metadata_export(
+        cls,
+        file_set: List[str],
+        image_index: int,
+        base_output_name: str,
+    ) -> dict:
+        """Build the schema-versioned metadata document for one processed image."""
+        return {
+            "schema_version": METADATA_SCHEMA_VERSION,
+            "generator": "dioptas_batch_gui",
+            "created_utc": datetime.now(timezone.utc).isoformat(),
+            "output_base_name": base_output_name,
+            "image_index": int(image_index),
+            "source_files": [
+                cls._export_hdf5_file_metadata(file_path)
+                for file_path in file_set
+            ],
+            "provenance": {
+                "source_file_count": len(file_set),
+                "metadata_export": "recursive_hdf5",
+                "large_dataset_inline_item_limit": MAX_INLINE_DATASET_ITEMS,
+            },
+        }
+
+    @staticmethod
+    def _deep_fill_missing(existing: dict, incoming: dict) -> bool:
+        """Fill keys missing from existing with incoming values; return True if changed."""
+        changed = False
+        for key, value in incoming.items():
+            if key not in existing:
+                existing[key] = value
+                changed = True
+            elif isinstance(existing[key], dict) and isinstance(value, dict):
+                changed = BatchProcessor._deep_fill_missing(existing[key], value) or changed
+        return changed
+
+    @staticmethod
+    def _write_json_atomic(path: Path, data: dict):
+        """Write JSON atomically to avoid leaving a partial metadata file."""
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        tmp_path.replace(path)
+
+    def export_metadata_for_image(
+        self,
+        file_set: List[str],
+        image_index: int,
+        base_output_name: str,
+    ) -> tuple[Path, str]:
+        """
+        Create or safely extend the HDF5 metadata export for one image.
+
+        Returns:
+            Tuple of written-or-existing path and action: created, updated, unchanged,
+            overwritten, or versioned.
+        """
+        paths = self._build_output_paths(base_output_name)
+        metadata_path = paths["metadata_path"]
+        paths["cake_folder"].mkdir(parents=True, exist_ok=True)
+        metadata = self.build_metadata_export(file_set, image_index, base_output_name)
+
+        if not metadata_path.exists():
+            self._write_json_atomic(metadata_path, metadata)
+            logger.info(f"Saved metadata file: {metadata_path.resolve()}")
+            return metadata_path, "created"
+
+        if self.overwrite:
+            self._log_overwrite("metadata file", metadata_path)
+            self._write_json_atomic(metadata_path, metadata)
+            logger.info(f"Saved metadata file: {metadata_path.resolve()}")
+            return metadata_path, "overwritten"
+
+        try:
+            with metadata_path.open("r", encoding="utf-8") as handle:
+                existing = json.load(handle)
+        except Exception as exc:
+            versioned_path = metadata_path.with_name(
+                f"{metadata_path.stem}.{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                f"{metadata_path.suffix}"
+            )
+            self._write_json_atomic(versioned_path, metadata)
+            logger.warning(
+                "Existing metadata file could not be read safely; wrote versioned metadata "
+                f"file instead: {versioned_path.resolve()} ({exc})"
+            )
+            return versioned_path, "versioned"
+
+        if not isinstance(existing, dict) or existing.get("schema_version") != METADATA_SCHEMA_VERSION:
+            versioned_path = metadata_path.with_name(
+                f"{metadata_path.stem}.schema-{METADATA_SCHEMA_VERSION}."
+                f"{datetime.now().strftime('%Y%m%d%H%M%S')}{metadata_path.suffix}"
+            )
+            self._write_json_atomic(versioned_path, metadata)
+            logger.warning(
+                "Existing metadata schema is incompatible or unknown; wrote versioned metadata "
+                f"file instead: {versioned_path.resolve()}"
+            )
+            return versioned_path, "versioned"
+
+        if self._deep_fill_missing(existing, metadata):
+            self._write_json_atomic(metadata_path, existing)
+            logger.info(f"Updated metadata file with missing sections: {metadata_path.resolve()}")
+            return metadata_path, "updated"
+
+        logger.info(f"Skipping existing metadata file: {metadata_path.resolve()}")
+        return metadata_path, "unchanged"
         
     def process_lambda_image(self, 
                             file_set: List[str], 
@@ -420,10 +712,19 @@ class BatchProcessor:
             'dat_file': None,
             'npy_file': None,
             'npy_files': None,
+            'metadata_file': None,
+            'metadata_action': None,
             'skipped': False,
             'overwritten': False,
         }
         paths = self._build_output_paths(base_output_name)
+        inventory = self.inspect_existing_output(base_output_name)
+        logger.info(
+            "Existing output inventory for "
+            f"{base_output_name}: param_folder={inventory['param_folder_exists']}, "
+            f"metadata={inventory['metadata_exists']}, "
+            f"artifacts={inventory['processing_artifacts']}"
+        )
         chi_exists = paths["chi_path"].exists()
         xy_exists = paths["xy_path"].exists()
         dat_exists = paths["dat_path"].exists()
@@ -442,6 +743,11 @@ class BatchProcessor:
 
                 if chi_ready and xy_ready and dat_ready and cake_ready:
                     existing_dims = self._get_existing_cake_dims(paths) if export_cake_npy else None
+                    metadata_path, metadata_action = self.export_metadata_for_image(
+                        file_set, image_index, base_output_name
+                    )
+                    results['metadata_file'] = str(metadata_path)
+                    results['metadata_action'] = metadata_action
                     if export_chi:
                         results['chi_file'] = str(paths["chi_path"])
                     if export_xy:
@@ -467,6 +773,11 @@ class BatchProcessor:
                     logger.info(
                         f"SKIPPED: image {image_index}: outputs already exist for {base_output_name}"
                     )
+                    if metadata_action in {"created", "updated", "versioned"}:
+                        logger.info(
+                            "Incremental metadata update completed for "
+                            f"{base_output_name}: {metadata_action}"
+                        )
                     if existing_dims is not None:
                         logger.info(
                             "Using existing CAKE files with bins: "
@@ -656,6 +967,14 @@ class BatchProcessor:
                         "Saved cake files: "
                         f"{int_path.resolve()}, {tth_path.resolve()}, {azi_path.resolve()}"
                     )
+
+            metadata_path, metadata_action = self.export_metadata_for_image(
+                file_set, image_index, base_output_name
+            )
+            results['metadata_file'] = str(metadata_path)
+            results['metadata_action'] = metadata_action
+            if metadata_action == "overwritten":
+                results['overwritten'] = True
                 
             results['success'] = True
             
@@ -700,7 +1019,11 @@ class BatchProcessor:
             'chi_files': [],
             'xy_files': [],
             'dat_files': [],
-            'npy_files': []
+            'npy_files': [],
+            'metadata_files': [],
+            'metadata_created': 0,
+            'metadata_updated': 0,
+            'metadata_versioned': 0,
         }
         
         # Get base name for output files
@@ -748,6 +1071,14 @@ class BatchProcessor:
                     stats['dat_files'].append(results['dat_file'])
                 if results.get('npy_file'):
                     stats['npy_files'].append(results['npy_file'])
+                if results.get('metadata_file'):
+                    stats['metadata_files'].append(results['metadata_file'])
+                if results.get('metadata_action') == "created":
+                    stats['metadata_created'] += 1
+                elif results.get('metadata_action') == "updated":
+                    stats['metadata_updated'] += 1
+                elif results.get('metadata_action') == "versioned":
+                    stats['metadata_versioned'] += 1
             else:
                 stats['failed'] += 1
 
