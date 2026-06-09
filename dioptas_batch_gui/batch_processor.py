@@ -736,12 +736,31 @@ class BatchProcessor:
         cake_files_exist = cake_int_exists and cake_tth_exists and cake_azi_exists
         
         try:
+            if not any([export_chi, export_xy, export_dat, export_cake_npy, export_metadata]):
+                raise ValueError("No outputs selected for export")
+
+            image_loaded = False
+
+            def load_image_and_estimate_points():
+                nonlocal image_loaded
+                if image_loaded:
+                    return
+                self._load_image_into_config(file_set, image_index)
+                estimated_points = self.estimate_integration_points()
+                self.update_integration_points(estimated_points)
+                if estimate_callback:
+                    estimate_callback(estimated_points)
+                image_loaded = True
+
             # Respect "overwrite existing files" before doing any image-loading or integration work.
             if not self.overwrite:
                 chi_ready = (not export_chi) or chi_exists
                 xy_ready = (not export_xy) or xy_exists
                 dat_ready = (not export_dat) or dat_exists
-                cake_ready = (not export_cake_npy) or cake_files_exist
+                cake_ready = not export_cake_npy
+                if export_cake_npy and cake_files_exist:
+                    load_image_and_estimate_points()
+                    cake_ready = self._cake_matches_requested_resolution(paths)
                 metadata_ready = (not export_metadata) or paths["metadata_path"].exists()
 
                 if chi_ready and xy_ready and dat_ready and cake_ready and metadata_ready:
@@ -792,18 +811,19 @@ class BatchProcessor:
                     results['skipped'] = True
                     return results
 
-            self._load_image_into_config(file_set, image_index)
-            estimated_points = self.estimate_integration_points()
-            self.update_integration_points(estimated_points)
-            if estimate_callback:
-                estimate_callback(estimated_points)
+            load_image_and_estimate_points()
 
-            cake_exists = cake_files_exist and self._cake_matches_requested_resolution(paths)
+            cake_ready = cake_files_exist and self._cake_matches_requested_resolution(paths)
+            if export_cake_npy and cake_files_exist and not self.overwrite and not cake_ready:
+                raise RuntimeError(
+                    "Existing CAKE files do not match the requested resolution. "
+                    "Enable overwrite to regenerate them."
+                )
             need_chi_processing = export_chi and (self.overwrite or not chi_exists)
             need_xy_processing = export_xy and (self.overwrite or not xy_exists)
             need_dat_processing = export_dat and (self.overwrite or not dat_exists)
             need_cake_processing = export_cake_npy and (
-                self.overwrite or not (cake_int_exists and cake_tth_exists and cake_azi_exists)
+                self.overwrite or not cake_ready
             )
             need_1d_processing = need_chi_processing or need_xy_processing or need_dat_processing
 

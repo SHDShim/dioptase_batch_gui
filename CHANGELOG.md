@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-09
+
+- Fixed CAKE skip validation so existing arrays must match the image-derived resolution.
+- Blocked runs with no selected output products.
+- Prevented watch inactivity auto-stop during active processing.
+- Fixed progress accounting for failed or cancelled image processing.
+
 ## [0.5.1] - 2026-06-06
 
 - Stopped watch-mode queue processing when **Stop Watching** is pressed.

@@ -1168,6 +1168,19 @@ class DioptasBatchGUI(QMainWindow):
         if file_path:
             self.mask_file_edit.setText(file_path)
             self._save_settings()
+
+    def _has_selected_outputs(self):
+        """Return True when at least one durable output product is selected."""
+        return any(
+            checkbox.isChecked()
+            for checkbox in (
+                self.export_chi_cb,
+                self.export_xy_cb,
+                self.export_dat_cb,
+                self.export_npy_cb,
+                self.export_metadata_cb,
+            )
+        )
             
     def _validate_config(self, check_watch_dir=False):
         """Validate configuration before starting."""
@@ -1191,6 +1204,13 @@ class DioptasBatchGUI(QMainWindow):
                     "Selected output directory does not exist"
                 )
                 return False
+        if not self._has_selected_outputs():
+            QMessageBox.warning(
+                self,
+                "Configuration Error",
+                "Please select at least one output product to export."
+            )
+            return False
         return True
         
     def _process_batch(self):
@@ -1391,14 +1411,14 @@ class DioptasBatchGUI(QMainWindow):
         if not self.file_watcher:
             return
 
+        if self.processing_thread is not None:
+            return
+
         if (
             time.time() - self.file_watcher.get_last_activity_time()
             >= self._current_watch_inactivity_timeout_seconds()
         ):
             self._stop_watching_for_inactivity()
-            return
-
-        if self.processing_thread is not None:
             return
             
         # Get completed files
@@ -1636,7 +1656,7 @@ class DioptasBatchGUI(QMainWindow):
     def _processing_finished(self, stats):
         """Handle processing completion."""
         self.completed_file_sets += 1
-        self.completed_images += stats.get("total_images", 0)
+        self.completed_images += stats.get("processed", 0)
         if self.current_mode == "batch":
             total_images = max(self.requested_images, self.completed_images, 1)
             self.progress_bar.setMaximum(total_images)
@@ -1645,7 +1665,7 @@ class DioptasBatchGUI(QMainWindow):
         else:
             total_images = max(stats.get("total_images", 0), 1)
             self.progress_bar.setMaximum(total_images)
-            self.progress_bar.setValue(total_images)
+            self.progress_bar.setValue(min(stats.get("processed", 0), total_images))
             self.progress_bar.setFormat("%v/%m images")
         
         self._append_log(

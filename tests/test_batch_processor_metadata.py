@@ -261,6 +261,77 @@ def test_existing_processed_outputs_skip_unchecked_metadata(tmp_path, monkeypatc
     assert not (param_dir / "scan_0001.metadata.v1.json").exists()
 
 
+def test_no_selected_outputs_fails_explicitly(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.h5"
+    _write_hdf5(source)
+    processor = _processor(tmp_path, monkeypatch)
+
+    result = processor.process_lambda_image(
+        [str(source)],
+        0,
+        "scan_0001",
+        export_chi=False,
+        export_xy=False,
+        export_dat=False,
+        export_cake_npy=False,
+        export_metadata=False,
+    )
+
+    assert result["success"] is False
+    assert "No outputs selected" in result["error"]
+
+
+def test_existing_wrong_resolution_cake_requires_overwrite(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.h5"
+    _write_hdf5(source)
+    output_dir = tmp_path / "processed-existing"
+    param_dir = output_dir / "scan_0001-param"
+    param_dir.mkdir(parents=True)
+    np.save(param_dir / "scan_0001.int.cake.npy", np.ones((360, 7)))
+    np.save(param_dir / "scan_0001.tth.cake.npy", np.arange(7))
+    np.save(param_dir / "scan_0001.azi.cake.npy", np.arange(360))
+
+    processor = _processor(tmp_path, monkeypatch, output_dir=output_dir)
+    result = processor.process_lambda_image(
+        [str(source)],
+        0,
+        "scan_0001",
+        export_chi=False,
+        export_cake_npy=True,
+        export_metadata=False,
+    )
+
+    assert result["success"] is False
+    assert "Enable overwrite" in result["error"]
+    assert np.load(param_dir / "scan_0001.tth.cake.npy").shape == (7,)
+
+
+def test_existing_wrong_resolution_cake_regenerates_with_overwrite(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.h5"
+    _write_hdf5(source)
+    output_dir = tmp_path / "processed-existing"
+    param_dir = output_dir / "scan_0001-param"
+    param_dir.mkdir(parents=True)
+    np.save(param_dir / "scan_0001.int.cake.npy", np.ones((360, 7)))
+    np.save(param_dir / "scan_0001.tth.cake.npy", np.arange(7))
+    np.save(param_dir / "scan_0001.azi.cake.npy", np.arange(360))
+
+    processor = _processor(tmp_path, monkeypatch, output_dir=output_dir, overwrite=True)
+    result = processor.process_lambda_image(
+        [str(source)],
+        0,
+        "scan_0001",
+        export_chi=False,
+        export_cake_npy=True,
+        export_metadata=False,
+    )
+
+    assert result["success"] is True
+    assert result["overwritten"] is True
+    assert np.load(param_dir / "scan_0001.int.cake.npy").shape == (360, 8)
+    assert np.load(param_dir / "scan_0001.tth.cake.npy").shape == (8,)
+
+
 def test_process_file_set_stops_when_cancellation_is_requested(tmp_path, monkeypatch):
     source = tmp_path / "scan_0001.h5"
     _write_hdf5(source, n_images=3)

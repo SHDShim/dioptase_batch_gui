@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 """
+0.5.2 Fix CAKE skip validation, output selection validation, watch inactivity, and progress accounting.
 0.5.1 Stop watch-mode queue processing when Stop Watching is pressed.
 0.5.0 Add selected output directories and incremental HDF5 metadata exports.
 0.4.2 Add dbg launcher, latest-file highlighting, and GUI/log visibility improvements.
