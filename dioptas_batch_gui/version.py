@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.2"
+__version__ = "0.5.2a"
 
 """
+--- Up to this point below GPT-5.4 and 5.5 were used.  Now I will test qwen3, go back to "Prepare release ...0.5.2" if needed.
 0.5.2 Fix CAKE skip validation, output selection validation, watch inactivity, and progress accounting.
 0.5.1 Stop watch-mode queue processing when Stop Watching is pressed.
 0.5.0 Add selected output directories and incremental HDF5 metadata exports.
