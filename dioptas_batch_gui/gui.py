@@ -60,6 +60,7 @@ class ProcessingThread(QThread):
         export_xy,
         export_dat,
         export_cake,
+        export_metadata,
         apply_mask_to_chi,
         apply_mask_to_cake,
     ):
@@ -70,6 +71,7 @@ class ProcessingThread(QThread):
         self.export_xy = export_xy
         self.export_dat = export_dat
         self.export_cake = export_cake
+        self.export_metadata = export_metadata
         self.apply_mask_to_chi = apply_mask_to_chi
         self.apply_mask_to_cake = apply_mask_to_cake
         
@@ -78,12 +80,13 @@ class ProcessingThread(QThread):
         try:
             stats = self.processor.process_file_set(
                 self.file_set,
-                self.export_chi,
-                self.export_xy,
-                self.export_dat,
-                self.export_cake,
-                self.apply_mask_to_chi,
-                self.apply_mask_to_cake,
+                export_chi=self.export_chi,
+                export_xy=self.export_xy,
+                export_dat=self.export_dat,
+                export_cake_npy=self.export_cake,
+                apply_mask_to_chi=self.apply_mask_to_chi,
+                apply_mask_to_cake=self.apply_mask_to_cake,
+                export_metadata=self.export_metadata,
                 progress_callback=self._progress_callback,
                 estimate_callback=self._estimate_callback,
                 should_continue=self._should_continue,
@@ -224,11 +227,9 @@ class DioptasBatchGUI(QMainWindow):
         config_layout = QVBoxLayout()
         
         # Output directory
-        output_label = QLabel("Output Directory:")
-        output_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        config_layout.addWidget(output_label)
-
         output_mode_layout = QHBoxLayout()
+        output_label = QLabel("Output Directory:")
+        output_mode_layout.addWidget(output_label)
         self.output_auto_rb = QRadioButton("Auto")
         self.output_auto_rb.setChecked(True)
         self.output_auto_rb.setToolTip(
@@ -265,10 +266,9 @@ class DioptasBatchGUI(QMainWindow):
         config_layout.addLayout(output_layout)
         
         # Calibration file
-        cal_label = QLabel("Calibration File (.poni):")
-        cal_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        config_layout.addWidget(cal_label)
         cal_layout = QHBoxLayout()
+        cal_label = QLabel("Calibration File (.poni):")
+        cal_layout.addWidget(cal_label)
         self.cal_file_edit = QLineEdit()
         cal_layout.addWidget(self.cal_file_edit)
         self.cal_file_btn = QPushButton("Browse...")
@@ -277,10 +277,9 @@ class DioptasBatchGUI(QMainWindow):
         config_layout.addLayout(cal_layout)
         
         # Mask file (optional)
-        mask_label = QLabel("Mask File (optional):")
-        mask_label.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        config_layout.addWidget(mask_label)
         mask_layout = QHBoxLayout()
+        mask_label = QLabel("Mask File (optional):")
+        mask_layout.addWidget(mask_label)
         self.mask_file_edit = QLineEdit()
         mask_layout.addWidget(self.mask_file_edit)
         self.mask_file_btn = QPushButton("Browse...")
@@ -349,14 +348,19 @@ class DioptasBatchGUI(QMainWindow):
         self.export_npy_cb.setChecked(True)
         checkbox_grid.addWidget(self.export_npy_cb, 1, 1)
 
-        checkbox_grid.addWidget(QLabel("Apply Mask:"), 2, 0)
+        self.export_metadata_cb = QCheckBox("Metadata")
+        self.export_metadata_cb.setChecked(True)
+        checkbox_grid.addWidget(QLabel("Export:"), 2, 0)
+        checkbox_grid.addWidget(self.export_metadata_cb, 2, 1)
+
+        checkbox_grid.addWidget(QLabel("Apply Mask:"), 3, 0)
         self.apply_mask_to_chi_cb = QCheckBox("1D Pattern")
         self.apply_mask_to_chi_cb.setChecked(True)
-        checkbox_grid.addWidget(self.apply_mask_to_chi_cb, 2, 1)
+        checkbox_grid.addWidget(self.apply_mask_to_chi_cb, 3, 1)
 
         self.apply_mask_to_cake_cb = QCheckBox("2D Cake")
         self.apply_mask_to_cake_cb.setChecked(False)
-        checkbox_grid.addWidget(self.apply_mask_to_cake_cb, 2, 2)
+        checkbox_grid.addWidget(self.apply_mask_to_cake_cb, 3, 2)
         checkbox_grid.setColumnStretch(4, 1)
         options_layout.addLayout(checkbox_grid)
 
@@ -977,6 +981,7 @@ class DioptasBatchGUI(QMainWindow):
         )
         self.export_xy_cb.setChecked(settings.value("export_xy", False, type=bool))
         self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
+        self.export_metadata_cb.setChecked(settings.value("export_metadata", True, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
         self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
         output_mode = settings.value("output_mode", "auto")
@@ -1002,6 +1007,7 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("watch_stable_seconds", self.watch_stable_seconds_spin.value())
         settings.setValue("export_xy", self.export_xy_cb.isChecked())
         settings.setValue("export_dat", self.export_dat_cb.isChecked())
+        settings.setValue("export_metadata", self.export_metadata_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
         settings.setValue("output_mode", "custom" if self.output_custom_rb.isChecked() else "auto")
@@ -1080,7 +1086,8 @@ class DioptasBatchGUI(QMainWindow):
                     param_dir / f"{base_name}.tth.cake.npy",
                     param_dir / f"{base_name}.azi.cake.npy",
                 ])
-            required_paths.append(param_dir / f"{base_name}.metadata.v1.json")
+            if self.export_metadata_cb.isChecked():
+                required_paths.append(param_dir / f"{base_name}.metadata.v1.json")
         return required_paths
     
     def _browse_watch_dir(self):
@@ -1309,7 +1316,10 @@ class DioptasBatchGUI(QMainWindow):
                 unprocessed_files = []
                 for file_set in self.processor.group_lambda_files(existing_files):
                     required_paths = self._required_output_paths_for_file_set(file_set)
-                    if not required_paths or not all(path.exists() for path in required_paths):
+                    if required_paths and (
+                        self.overwrite_cb.isChecked()
+                        or not all(path.exists() for path in required_paths)
+                    ):
                         unprocessed_files.extend(file_set)
                 
                 if unprocessed_files:
@@ -1434,6 +1444,7 @@ class DioptasBatchGUI(QMainWindow):
             self.export_xy_cb.isChecked(),
             self.export_dat_cb.isChecked(),
             self.export_npy_cb.isChecked(),
+            self.export_metadata_cb.isChecked(),
             self.apply_mask_to_chi_cb.isChecked(),
             self.apply_mask_to_cake_cb.isChecked(),
         )

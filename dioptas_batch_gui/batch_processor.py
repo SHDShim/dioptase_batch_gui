@@ -686,6 +686,7 @@ class BatchProcessor:
                             export_cake_npy: bool = True,
                             apply_mask_to_chi: bool = True,
                             apply_mask_to_cake: bool = False,
+                            export_metadata: bool = True,
                             estimate_callback: Optional[Callable[[int], None]] = None) -> dict:
         """
         Process a single detector image.
@@ -699,6 +700,7 @@ class BatchProcessor:
             export_xy: Export 1D pattern as XY file
             export_dat: Export 1D pattern as DAT file
             export_cake_npy: Export 2D cake as NPY file
+            export_metadata: Export source HDF5 metadata as JSON
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
             
@@ -740,14 +742,17 @@ class BatchProcessor:
                 xy_ready = (not export_xy) or xy_exists
                 dat_ready = (not export_dat) or dat_exists
                 cake_ready = (not export_cake_npy) or cake_files_exist
+                metadata_ready = (not export_metadata) or paths["metadata_path"].exists()
 
-                if chi_ready and xy_ready and dat_ready and cake_ready:
+                if chi_ready and xy_ready and dat_ready and cake_ready and metadata_ready:
                     existing_dims = self._get_existing_cake_dims(paths) if export_cake_npy else None
-                    metadata_path, metadata_action = self.export_metadata_for_image(
-                        file_set, image_index, base_output_name
-                    )
-                    results['metadata_file'] = str(metadata_path)
-                    results['metadata_action'] = metadata_action
+                    metadata_action = None
+                    if export_metadata:
+                        metadata_path, metadata_action = self.export_metadata_for_image(
+                            file_set, image_index, base_output_name
+                        )
+                        results['metadata_file'] = str(metadata_path)
+                        results['metadata_action'] = metadata_action
                     if export_chi:
                         results['chi_file'] = str(paths["chi_path"])
                     if export_xy:
@@ -968,13 +973,14 @@ class BatchProcessor:
                         f"{int_path.resolve()}, {tth_path.resolve()}, {azi_path.resolve()}"
                     )
 
-            metadata_path, metadata_action = self.export_metadata_for_image(
-                file_set, image_index, base_output_name
-            )
-            results['metadata_file'] = str(metadata_path)
-            results['metadata_action'] = metadata_action
-            if metadata_action == "overwritten":
-                results['overwritten'] = True
+            if export_metadata:
+                metadata_path, metadata_action = self.export_metadata_for_image(
+                    file_set, image_index, base_output_name
+                )
+                results['metadata_file'] = str(metadata_path)
+                results['metadata_action'] = metadata_action
+                if metadata_action == "overwritten":
+                    results['overwritten'] = True
                 
             results['success'] = True
             
@@ -992,6 +998,7 @@ class BatchProcessor:
                         export_cake_npy: bool = True,
                         apply_mask_to_chi: bool = True,
                         apply_mask_to_cake: bool = False,
+                        export_metadata: bool = True,
                         progress_callback=None,
                         estimate_callback: Optional[Callable[[int], None]] = None,
                         should_continue: Optional[Callable[[], bool]] = None) -> dict:
@@ -1004,6 +1011,7 @@ class BatchProcessor:
             export_xy: Export 1D patterns as XY files
             export_dat: Export 1D patterns as DAT files
             export_cake_npy: Export 2D cakes as NPY files
+            export_metadata: Export source HDF5 metadata as JSON
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
             progress_callback: Optional callback function(current, total, status_msg)
@@ -1063,6 +1071,7 @@ class BatchProcessor:
                 export_cake_npy,
                 apply_mask_to_chi,
                 apply_mask_to_cake,
+                export_metadata,
                 estimate_callback=estimate_callback,
             )
             
@@ -1113,7 +1122,8 @@ class BatchProcessor:
                          export_xy: bool = False,
                          export_dat: bool = False,
                          export_cake_npy: bool = True,
-                         progress_callback=None) -> dict:
+                         progress_callback=None,
+                         export_metadata: bool = True) -> dict:
         """
         Process all Lambda files in a directory.
         
@@ -1123,6 +1133,7 @@ class BatchProcessor:
             export_xy: Export 1D patterns as XY files
             export_dat: Export 1D patterns as DAT files
             export_cake_npy: Export 2D cakes as NPY files
+            export_metadata: Export source HDF5 metadata as JSON
             progress_callback: Optional callback function
             
         Returns:
@@ -1159,6 +1170,7 @@ class BatchProcessor:
                 export_xy=export_xy,
                 export_dat=export_dat,
                 export_cake_npy=export_cake_npy,
+                export_metadata=export_metadata,
                 progress_callback=progress_callback,
             )
             

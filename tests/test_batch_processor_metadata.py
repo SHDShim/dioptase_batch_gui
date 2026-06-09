@@ -232,6 +232,35 @@ def test_existing_processed_outputs_receive_metadata_without_overwriting(tmp_pat
     assert (param_dir / "scan_0001.metadata.v1.json").exists()
 
 
+def test_existing_processed_outputs_skip_unchecked_metadata(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.h5"
+    _write_hdf5(source)
+    output_dir = tmp_path / "processed-existing"
+    param_dir = output_dir / "scan_0001-param"
+    param_dir.mkdir(parents=True)
+    chi = output_dir / "scan_0001.chi"
+    cake = param_dir / "scan_0001.int.cake.npy"
+    tth = param_dir / "scan_0001.tth.cake.npy"
+    azi = param_dir / "scan_0001.azi.cake.npy"
+    chi.write_text("existing chi\n", encoding="utf-8")
+    np.save(cake, np.ones((360, 8)))
+    np.save(tth, np.arange(8))
+    np.save(azi, np.arange(360))
+
+    processor = _processor(tmp_path, monkeypatch, output_dir=output_dir)
+    result = processor.process_lambda_image(
+        [str(source)],
+        0,
+        "scan_0001",
+        export_metadata=False,
+    )
+
+    assert result["success"] is True
+    assert result["skipped"] is True
+    assert result["metadata_action"] is None
+    assert not (param_dir / "scan_0001.metadata.v1.json").exists()
+
+
 def test_process_file_set_stops_when_cancellation_is_requested(tmp_path, monkeypatch):
     source = tmp_path / "scan_0001.h5"
     _write_hdf5(source, n_images=3)
