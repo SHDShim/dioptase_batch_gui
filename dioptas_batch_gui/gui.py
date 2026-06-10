@@ -230,19 +230,14 @@ class DioptasBatchGUI(QMainWindow):
         output_mode_layout = QHBoxLayout()
         output_label = QLabel("Output Directory:")
         output_mode_layout.addWidget(output_label)
-        self.output_auto_rb = QRadioButton("Auto")
-        self.output_auto_rb.setChecked(True)
-        self.output_auto_rb.setToolTip(
-            "Use <source folder>/processed-YYYY-MM-DD for each processed file set."
+        self.output_auto_cb = QCheckBox("Auto")
+        self.output_auto_cb.setChecked(True)
+        self.output_auto_cb.setToolTip(
+            "Use <source folder>/processed-YYYY-MM-DD for each processed file set.\n"
+            "Uncheck to select a custom output directory."
         )
-        self.output_custom_rb = QRadioButton("Existing directory")
-        self.output_custom_rb.setToolTip(
-            "Write missing products into a selected processed output directory."
-        )
-        self.output_auto_rb.toggled.connect(self._on_output_mode_changed)
-        self.output_custom_rb.toggled.connect(self._on_output_mode_changed)
-        output_mode_layout.addWidget(self.output_auto_rb)
-        output_mode_layout.addWidget(self.output_custom_rb)
+        self.output_auto_cb.stateChanged.connect(self._on_output_mode_changed)
+        output_mode_layout.addWidget(self.output_auto_cb)
         output_mode_layout.addStretch()
         config_layout.addLayout(output_mode_layout)
 
@@ -991,8 +986,7 @@ class DioptasBatchGUI(QMainWindow):
         output_mode = settings.value("output_mode", "auto")
         selected_output_dir = settings.value("selected_output_dir", "")
         self.output_dir_edit.setText(selected_output_dir)
-        self.output_custom_rb.setChecked(output_mode == "custom")
-        self.output_auto_rb.setChecked(output_mode != "custom")
+        self.output_auto_cb.setChecked(output_mode != "custom")
         self._on_output_mode_changed()
 
     def _commit_settings_inputs(self):
@@ -1014,8 +1008,8 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("export_metadata", self.export_metadata_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
-        settings.setValue("output_mode", "custom" if self.output_custom_rb.isChecked() else "auto")
-        if self.output_custom_rb.isChecked():
+        settings.setValue("output_mode", "custom" if not self.output_auto_cb.isChecked() else "auto")
+        if not self.output_auto_cb.isChecked():
             settings.setValue("selected_output_dir", self.output_dir_edit.text())
         settings.sync()
 
@@ -1029,7 +1023,7 @@ class DioptasBatchGUI(QMainWindow):
 
     def _output_directory_for_path(self, file_path: str | Path) -> Path:
         """Return the configured output directory for one source file."""
-        if self.output_custom_rb.isChecked() and self.output_dir_edit.text():
+        if not self.output_auto_cb.isChecked() and self.output_dir_edit.text():
             return Path(self.output_dir_edit.text()).expanduser().resolve()
         return Path(file_path).expanduser().resolve().parent / self._dated_output_folder_name()
 
@@ -1039,14 +1033,14 @@ class DioptasBatchGUI(QMainWindow):
 
     def _set_output_dir_preview(self, output_dir: Path | None):
         """Show the active or preview output directory in the GUI."""
-        if output_dir is None and self.output_custom_rb.isChecked():
+        if output_dir is None and not self.output_auto_cb.isChecked():
             return
         self.output_dir_edit.setText("" if output_dir is None else str(output_dir))
 
     def _set_output_dir_preview_for_paths(self, file_paths):
         """Preview the configured output directory for the first selected file path."""
         if not file_paths:
-            if self.output_auto_rb.isChecked():
+            if self.output_auto_cb.isChecked():
                 self._set_output_dir_preview(None)
             return
         self._set_output_dir_preview(self._output_directory_for_path(file_paths[0]))
@@ -1096,7 +1090,8 @@ class DioptasBatchGUI(QMainWindow):
     
     def _browse_watch_dir(self):
         """Browse for watch directory."""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Watch Directory")
+        start_dir = self.watch_dir_edit.text() or "/Volumes"
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Watch Directory", start_dir)
         if dir_path:
             self.watch_dir_edit.setText(dir_path)
             self._save_settings()
@@ -1111,7 +1106,7 @@ class DioptasBatchGUI(QMainWindow):
             
     def _browse_output_dir(self):
         """Browse for an existing processed output directory."""
-        start_dir = self.output_dir_edit.text() or self.watch_dir_edit.text()
+        start_dir = self.output_dir_edit.text() or self.watch_dir_edit.text() or "/Volumes"
         dir_path = QFileDialog.getExistingDirectory(
             self,
             "Select Existing Processed Output Directory",
@@ -1119,7 +1114,7 @@ class DioptasBatchGUI(QMainWindow):
         )
         if not dir_path:
             return
-        self.output_custom_rb.setChecked(True)
+        self.output_auto_cb.setChecked(False)
         self.output_dir_edit.setText(dir_path)
         self._save_settings()
         logging.info(
@@ -1129,31 +1124,33 @@ class DioptasBatchGUI(QMainWindow):
 
     def _on_output_mode_changed(self):
         """Update output-directory controls for auto or selected-directory mode."""
-        custom_mode = self.output_custom_rb.isChecked()
-        self.output_dir_btn.setEnabled(custom_mode)
-        if custom_mode:
+        auto_mode = self.output_auto_cb.isChecked()
+        self.output_dir_btn.setEnabled(not auto_mode)
+        if auto_mode:
+            self.output_dir_edit.setReadOnly(True)
             self.output_dir_edit.setPlaceholderText(
-                "Select an existing processed output directory"
+                "Automatically set to <source folder>/processed-YYYY-MM-DD"
             )
             self.output_dir_edit.setToolTip(
-                "Missing products will be added here without replacing existing files "
-                "unless overwrite is enabled."
+                "Processed files are written to a dated subfolder inside each source file directory."
             )
+            preview_paths = []
+            if self.current_mode == "sequence" and self.sequence_file_path is not None:
+                preview_paths = [str(self.sequence_file_path)]
+            elif self.selected_files:
+                preview_paths = self.selected_files
+            self._set_output_dir_preview_for_paths(preview_paths)
+            self._save_settings()
             return
 
+        self.output_dir_edit.setReadOnly(False)
         self.output_dir_edit.setPlaceholderText(
-            "Automatically set to <source folder>/processed-YYYY-MM-DD"
+            "Select an existing processed output directory"
         )
         self.output_dir_edit.setToolTip(
-            "Processed files are written to a dated subfolder inside each source file directory."
+            "Missing products will be added here without replacing existing files "
+            "unless overwrite is enabled."
         )
-        preview_paths = []
-        if self.current_mode == "sequence" and self.sequence_file_path is not None:
-            preview_paths = [str(self.sequence_file_path)]
-        elif self.selected_files:
-            preview_paths = self.selected_files
-        self._set_output_dir_preview_for_paths(preview_paths)
-        self._save_settings()
             
     def _browse_cal_file(self):
         """Browse for calibration file."""
@@ -1197,7 +1194,7 @@ class DioptasBatchGUI(QMainWindow):
         if not Path(self.cal_file_edit.text()).exists():
             QMessageBox.warning(self, "Configuration Error", "Calibration file does not exist")
             return False
-        if self.output_custom_rb.isChecked():
+        if not self.output_auto_cb.isChecked():
             if not self.output_dir_edit.text():
                 QMessageBox.warning(self, "Configuration Error", "Please select an output directory")
                 return False
@@ -1300,7 +1297,7 @@ class DioptasBatchGUI(QMainWindow):
                 calibration_file=self.cal_file_edit.text(),
                 output_directory=(
                     Path(self.output_dir_edit.text()).expanduser().resolve()
-                    if self.output_custom_rb.isChecked()
+                    if not self.output_auto_cb.isChecked()
                     else Path(self.watch_dir_edit.text()).expanduser().resolve()
                 ),
                 mask_file=mask_file,

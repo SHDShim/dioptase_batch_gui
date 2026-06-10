@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 """
+0.5.4 Replace Output Directory radio buttons with Auto checkbox; browse dialogs now default to /Volumes to show external and network drives.
 0.5.3 Forced white backgrounds for Processing Log and File List regardless of OS dark/light mode; updated legend text to white; changed latest-processed highlight from yellow/purple to blue; set file-list header font to black.
 0.5.2 Fix CAKE skip validation, output selection validation, watch inactivity, and progress accounting.
 0.5.1 Stop watch-mode queue processing when Stop Watching is pressed.
