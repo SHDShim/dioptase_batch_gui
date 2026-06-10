@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-06-09
+
+- Forced white backgrounds for Processing Log and File List regardless of OS dark/light mode.
+- Updated File List legend text to white for visibility on white background.
+- Changed latest-processed highlight from yellow/purple to blue for better visibility on white.
+- Set File List header font to black.
+- Made default (processed) file list item font explicitly black.
+
 ## [0.5.2] - 2026-06-09
 
 - Fixed CAKE skip validation so existing arrays must match the image-derived resolution.

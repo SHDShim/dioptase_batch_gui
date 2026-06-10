@@ -409,19 +409,23 @@ class DioptasBatchGUI(QMainWindow):
         self.file_list_table.setMinimumHeight(280)
         self.file_list_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.file_list_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.file_list_table.setStyleSheet(
+            "background-color: #ffffff;"
+            "QHeaderView::section { color: #000000; }"
+        )
         file_list_layout.addWidget(self.file_list_table)
 
         file_list_legend = QLabel(
             '<span style="color: #cc0000; font-weight: 600;">Red</span>: overwritten files | '
             '<span style="color: #008000; font-weight: 600;">Green</span>: skipped because output files already exist | '
             '<span style="color: #808080; font-weight: 600;">Gray</span>: cancelled files | '
-            "<span style='color: #FFFF00; font-weight: 600;'>Yellow</span>: latest processed | White: processed files | "
+            '<span style="color: #0055CC; font-weight: 600;">Blue</span>: latest processed | White: processed files | '
             "White italic: pending files"
         )
         file_list_legend.setTextFormat(Qt.TextFormat.RichText)
         file_list_legend.setWordWrap(True)
         file_list_legend.setStyleSheet(
-            "color: #d9d9d9; font-size: 11px; padding-top: 4px;"
+            "color: #ffffff; font-size: 11px; padding-top: 4px;"
         )
         file_list_layout.addWidget(file_list_legend)
 
@@ -438,7 +442,7 @@ class DioptasBatchGUI(QMainWindow):
         self.log_console.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.log_console.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.log_console.setStyleSheet(
-            "background-color: #f5f5f5; color: #000000; font-family: Menlo, Monaco, 'Courier New';"
+            "background-color: #ffffff; color: #000000; font-family: Menlo, Monaco, 'Courier New';"
         )
         log_layout.addWidget(self.log_console)
         
@@ -1626,6 +1630,8 @@ class DioptasBatchGUI(QMainWindow):
                 path_label.setStyleSheet("color: #cc0000;")
             elif record["status"] == "cancelled":
                 path_label.setStyleSheet("color: #808080;")
+            else:
+                path_label.setStyleSheet("color: #000000;")
             available_width = max(
                 80,
                 self.file_list_table.columnWidth(0) - 16,
@@ -1646,8 +1652,10 @@ class DioptasBatchGUI(QMainWindow):
             elif record["status"] == "cancelled":
                 processed_item.setForeground(Qt.GlobalColor.gray)
             elif is_latest:
-                path_label.setStyleSheet("color: #FFFF00;")
-                processed_item.setForeground(Qt.GlobalColor.yellow)
+                path_label.setStyleSheet("color: #0055CC;")
+                processed_item.setForeground(Qt.GlobalColor.blue)
+            else:
+                processed_item.setForeground(Qt.GlobalColor.black)
             self.file_list_table.setCellWidget(row, 0, path_label)
             self.file_list_table.setItem(row, 1, processed_item)
 
