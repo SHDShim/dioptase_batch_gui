@@ -50,6 +50,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Kilo editor files
+.kilo/
+
 # Local logs / runtime files
 *.log
 pypi.md
