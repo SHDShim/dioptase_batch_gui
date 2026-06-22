@@ -73,12 +73,19 @@ class _FakeLambdaImage:
         return np.zeros((4, 4))
 
 
+class _FakeFabioLoader:
+    def __init__(self, _filename):
+        raise OSError("not a real fabIO image")
+
+
 def _install_dioptas_stubs(monkeypatch):
     config_module = types.ModuleType("dioptas.model.Configuration")
     config_module.Configuration = _FakeConfiguration
 
     loader_module = types.ModuleType("dioptas.model.loader")
+    fabio_loader_module = types.SimpleNamespace(FabioLoader=_FakeFabioLoader)
     lambda_loader_module = types.SimpleNamespace(LambdaImage=_FakeLambdaImage)
+    loader_module.FabioLoader = fabio_loader_module
     loader_module.LambdaLoader = lambda_loader_module
 
     monkeypatch.setitem(sys.modules, "dioptas", types.ModuleType("dioptas"))
@@ -154,6 +161,28 @@ def test_metadata_file_created_when_param_folder_is_missing(tmp_path, monkeypatc
     data = json.loads(path.read_text(encoding="utf-8"))
     assert data["schema_version"] == "1.0"
     assert data["source_files"][0]["hdf5"]["nodes"]["/entry"]["NX_class"] == "NXentry"
+
+
+def test_generic_image_metadata_created_for_non_hdf5_source(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.tiff"
+    source.write_bytes(b"fake-tiff")
+    processor = _processor(tmp_path, monkeypatch)
+
+    path, action = processor.export_metadata_for_image([str(source)], 0, "scan_0001")
+
+    assert action == "created"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["source_files"][0]["name"] == "scan_0001.tiff"
+    assert data["source_files"][0]["format"]["metadata_detail"] == "generic_file"
+    assert "hdf5" not in data["source_files"][0]
+
+
+def test_non_hdf5_image_count_defaults_to_one_when_fabio_cannot_read(tmp_path, monkeypatch):
+    source = tmp_path / "scan_0001.tiff"
+    source.write_bytes(b"fake-tiff")
+    processor = _processor(tmp_path, monkeypatch)
+
+    assert processor.get_image_count([str(source)]) == 1
 
 
 def test_existing_metadata_is_left_untouched_when_complete(tmp_path, monkeypatch):

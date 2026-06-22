@@ -25,6 +25,7 @@ from PyQt6.QtGui import QFont, QIcon, QFontMetrics
 
 from .file_watcher import FileWatcher
 from .batch_processor import BatchProcessor
+from .supported_formats import has_supported_image_extension, qt_image_file_filter
 from .version import __version__
 
 FIXED_AZIMUTH_BINS = 360
@@ -743,9 +744,9 @@ class DioptasBatchGUI(QMainWindow):
         
         file_paths, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select Lambda Detector Files",
+            "Select Diffraction Image Files",
             last_file_dir,
-            "HDF5 Files (*.h5 *.nxs);;All Files (*)"
+            qt_image_file_filter()
         )
         if file_paths:
             self.selected_files = file_paths
@@ -778,7 +779,7 @@ class DioptasBatchGUI(QMainWindow):
             self,
             "Select Sequence File",
             last_file_dir,
-            "HDF5 Files (*.h5 *.nxs);;All Files (*)"
+            qt_image_file_filter()
         )
         if not file_path:
             return
@@ -860,10 +861,9 @@ class DioptasBatchGUI(QMainWindow):
         if self.sequence_file_path is None:
             return []
 
-        suffixes = {".h5", ".nxs"}
         candidates = [
             path for path in self.sequence_file_path.parent.iterdir()
-            if path.is_file() and path.suffix.lower() in suffixes
+            if path.is_file() and has_supported_image_extension(path)
         ]
 
         if self._sequence_navigation_mode() == "time":
@@ -1328,9 +1328,11 @@ class DioptasBatchGUI(QMainWindow):
             
             # Check for existing files in the directory and queue them
             watch_path = Path(self.watch_dir_edit.text())
-            existing_files = []
-            for pattern in ['*.h5', '*.nxs']:
-                existing_files.extend([str(f) for f in watch_path.rglob(pattern)])
+            existing_files = [
+                str(path)
+                for path in watch_path.rglob("*")
+                if path.is_file() and has_supported_image_extension(path)
+            ]
             
             if existing_files:
                 # Check which file sets haven't been processed yet.

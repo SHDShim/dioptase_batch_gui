@@ -1,10 +1,10 @@
 # Dioptas Batch Processor GUI
 
-Standalone GUI for automated batch processing of Lambda detector diffraction files using Dioptas.
+Standalone GUI for automated batch processing of diffraction image files using Dioptas.
 
 ## Features
 
-- Folder watch mode for automatic processing of incoming `.nxs` / `.h5` files
+- Folder watch mode for automatic processing of incoming Dioptas-readable image files, including `.nxs`, `.h5`, `.tif`, and `.tiff`
 - Manual batch mode for selected files
 - CHI export (1D integration)
 - NPY export (2D cake arrays: intensity, two-theta, azimuth)
@@ -164,7 +164,7 @@ output_directory/
 
 If the selected output directory already exists, the app inspects the existing
 products and writes only missing outputs when overwrite is disabled. Existing
-CHI/XY/DAT/NPY products are left untouched. Missing HDF5 metadata exports are
+CHI/XY/DAT/NPY products are left untouched. Missing metadata exports are
 added under the corresponding `*-param` folder. If an older metadata JSON file
 is structurally compatible, missing top-level sections are added conservatively;
 if compatibility is uncertain, a versioned metadata JSON file is written instead
@@ -174,7 +174,9 @@ The metadata JSON uses `schema_version: "1.0"` and recursively records HDF5
 file attributes, groups, datasets, dataset attributes, group attributes,
 `NX_class` values, source paths, provenance, and a small canonical index for
 common coordinates and detector/instrument/scan paths. Large datasets are
-described by shape and dtype rather than duplicated inline.
+described by shape and dtype rather than duplicated inline. For non-HDF5 image
+files, the metadata export records generic source file details such as path,
+name, size, modification time, and extension.
 
 ## License
 

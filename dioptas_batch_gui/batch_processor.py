@@ -17,7 +17,13 @@ import h5py
 
 # Dioptas imports
 from dioptas.model.Configuration import Configuration
-from dioptas.model.loader import LambdaLoader
+from dioptas.model.loader import FabioLoader, LambdaLoader
+
+from .supported_formats import (
+    DIFFRACTION_IMAGE_EXTENSIONS,
+    has_hdf5_extension,
+    has_supported_image_extension,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +290,7 @@ class BatchProcessor:
         """
         Group Lambda detector files by their base name.
         Multi-module Lambda detectors produce 3 files (m1, m2, m3) per acquisition.
-        Single HDF5 files are treated as individual file sets.
+        Single detector image files are treated as individual file sets.
         
         Args:
             file_list: List of file paths
@@ -297,9 +303,9 @@ class BatchProcessor:
         
         for file_path in file_list:
             # Check if this is a multi-module Lambda file (has _m1, _m2, or _m3)
-            if re.search(r'_m[1-3](_part\d+)?\.(nxs|h5)$', file_path):
+            if re.search(r'_m[1-3](_part\d+)?\.(nxs|h5|hdf|hdf5)$', file_path, re.IGNORECASE):
                 # Multi-module Lambda file
-                base_name = re.sub(r'_m[1-3](_part\d+)?\.(nxs|h5)$', '', file_path)
+                base_name = re.sub(r'_m[1-3](_part\d+)?\.(nxs|h5|hdf|hdf5)$', '', file_path, flags=re.IGNORECASE)
                 
                 if base_name not in multi_module_groups:
                     multi_module_groups[base_name] = []
@@ -325,19 +331,29 @@ class BatchProcessor:
         
     def get_image_count(self, file_set: List[str]) -> int:
         """
-        Get number of images in a Lambda file set.
+        Get number of images in a file set.
         
         Args:
-            file_set: List of 3 Lambda files
+            file_set: List of 3 Lambda files or one detector image file
             
         Returns:
             Number of images in the dataset
         """
         try:
-            with h5py.File(file_set[0], 'r') as f:
-                data_path = 'entry/instrument/detector/data'
-                if data_path in f:
-                    return f[data_path].shape[0]
+            if len(file_set) == 3 or has_hdf5_extension(file_set[0]):
+                with h5py.File(file_set[0], 'r') as f:
+                    data_path = 'entry/instrument/detector/data'
+                    if data_path in f:
+                        return f[data_path].shape[0]
+
+            try:
+                return int(FabioLoader.FabioLoader(file_set[0]).series_max)
+            except Exception as fabio_error:
+                logger.info(
+                    "Could not read frame count with fabIO; treating as one image: "
+                    f"{file_set[0]} ({fabio_error})"
+                )
+                return 1
         except Exception as e:
             logger.error(f"Error reading image count: {e}")
             
@@ -567,6 +583,29 @@ class BatchProcessor:
         }
 
     @classmethod
+    def _export_generic_file_metadata(cls, file_path: str | Path) -> dict:
+        """Export durable file metadata for non-HDF5 diffraction images."""
+        path = Path(file_path).expanduser().resolve()
+        stat = path.stat()
+        return {
+            "path": str(path),
+            "name": path.name,
+            "size_bytes": stat.st_size,
+            "mtime_utc": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "format": {
+                "extension": path.suffix.lower(),
+                "metadata_detail": "generic_file",
+            },
+        }
+
+    @classmethod
+    def _export_source_file_metadata(cls, file_path: str | Path) -> dict:
+        """Export HDF5 metadata when available, otherwise generic file metadata."""
+        if has_hdf5_extension(file_path):
+            return cls._export_hdf5_file_metadata(file_path)
+        return cls._export_generic_file_metadata(file_path)
+
+    @classmethod
     def build_metadata_export(
         cls,
         file_set: List[str],
@@ -581,12 +620,12 @@ class BatchProcessor:
             "output_base_name": base_output_name,
             "image_index": int(image_index),
             "source_files": [
-                cls._export_hdf5_file_metadata(file_path)
+                cls._export_source_file_metadata(file_path)
                 for file_path in file_set
             ],
             "provenance": {
                 "source_file_count": len(file_set),
-                "metadata_export": "recursive_hdf5",
+                "metadata_export": "recursive_hdf5_or_generic_file",
                 "large_dataset_inline_item_limit": MAX_INLINE_DATASET_ITEMS,
             },
         }
@@ -1023,15 +1062,15 @@ class BatchProcessor:
                         estimate_callback: Optional[Callable[[int], None]] = None,
                         should_continue: Optional[Callable[[], bool]] = None) -> dict:
         """
-        Process all images in a Lambda file set.
+        Process all images in a file set.
         
         Args:
-            file_set: List of 3 Lambda files
+            file_set: List of 3 Lambda files or one detector image file
             export_chi: Export 1D patterns as CHI files
             export_xy: Export 1D patterns as XY files
             export_dat: Export 1D patterns as DAT files
             export_cake_npy: Export 2D cakes as NPY files
-            export_metadata: Export source HDF5 metadata as JSON
+            export_metadata: Export source metadata as JSON
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
             progress_callback: Optional callback function(current, total, status_msg)
@@ -1145,28 +1184,30 @@ class BatchProcessor:
                          progress_callback=None,
                          export_metadata: bool = True) -> dict:
         """
-        Process all Lambda files in a directory.
+        Process all supported diffraction image files in a directory.
         
         Args:
-            input_directory: Directory containing Lambda files
+            input_directory: Directory containing detector image files
             export_chi: Export 1D patterns as CHI files
             export_xy: Export 1D patterns as XY files
             export_dat: Export 1D patterns as DAT files
             export_cake_npy: Export 2D cakes as NPY files
-            export_metadata: Export source HDF5 metadata as JSON
+            export_metadata: Export source metadata as JSON
             progress_callback: Optional callback function
             
         Returns:
             Dictionary with overall statistics
         """
-        # Find all .nxs and .h5 files
         input_path = Path(input_directory)
-        nxs_files = list(input_path.glob("*.nxs"))
-        h5_files = list(input_path.glob("*.h5"))
-        all_files = nxs_files + h5_files
+        all_files = [
+            path
+            for path in input_path.iterdir()
+            if path.is_file() and has_supported_image_extension(path)
+        ]
         
         if not all_files:
-            logger.warning(f"No .nxs or .h5 files found in {input_directory}")
+            extensions = ", ".join(DIFFRACTION_IMAGE_EXTENSIONS)
+            logger.warning(f"No supported image files found in {input_directory}; expected: {extensions}")
             return {'file_sets': 0, 'total_processed': 0}
             
         # Group files

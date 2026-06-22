@@ -14,19 +14,21 @@ from queue import Queue
 import re
 import h5py
 
+from .supported_formats import has_hdf5_extension, image_file_regex
+
 logger = logging.getLogger(__name__)
 
 
 class LambdaFileHandler(FileSystemEventHandler):
     """
-    Handler for Lambda detector file events.
-    Detects new .nxs files and adds them to processing queue.
+    Handler for detector image file events.
+    Detects new Dioptas-readable diffraction image files and queues them.
     """
     
-    def __init__(self, file_queue: Queue, file_pattern=r'.*\.nxs$', stable_seconds: float = 10.0):
+    def __init__(self, file_queue: Queue, file_pattern=None, stable_seconds: float = 10.0):
         super().__init__()
         self.file_queue = file_queue
-        self.file_pattern = re.compile(file_pattern)
+        self.file_pattern = re.compile(file_pattern or image_file_regex(), re.IGNORECASE)
         self.processed_files = set()
         self.pending_files = {}  # Track files being written
         self.stable_seconds = float(stable_seconds)
@@ -64,7 +66,10 @@ class LambdaFileHandler(FileSystemEventHandler):
         tracked["stable_since"] = None
 
     def _file_contents_look_complete(self, file_path: str) -> bool:
-        """Return True once the file can be opened as a valid HDF5/Nexus file."""
+        """Return True once the file appears ready for processing."""
+        if not has_hdf5_extension(file_path):
+            return True
+
         try:
             with h5py.File(file_path, "r") as handle:
                 handle.visit(lambda _: None)
@@ -111,7 +116,8 @@ class LambdaFileHandler(FileSystemEventHandler):
         """
         Check if pending files have finished writing.
         Files are considered complete once their size and mtime have remained
-        unchanged for a sustained interval and the HDF5 container can be opened.
+        unchanged for a sustained interval. HDF5/NeXus files must also open
+        successfully to avoid processing an incomplete container.
         """
         current_time = time.time()
         completed_files = []
@@ -167,13 +173,13 @@ class FileWatcher:
     Main file watcher class that monitors directory for new files.
     """
     
-    def __init__(self, watch_directory: str, file_pattern=r'.*\.(nxs|h5)$', stable_seconds: float = 10.0):
+    def __init__(self, watch_directory: str, file_pattern=None, stable_seconds: float = 10.0):
         """
         Initialize file watcher.
         
         Args:
             watch_directory: Directory to monitor
-            file_pattern: Regex pattern for files to watch (default: all .nxs or .h5 files)
+            file_pattern: Regex pattern for files to watch (default: Dioptas image files)
             stable_seconds: Time that size/mtime must remain unchanged before read access
         """
         self.watch_directory = Path(watch_directory)

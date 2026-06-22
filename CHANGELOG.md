@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-06-22
+
+- Added support for Dioptas-readable XRD image formats beyond H5/HDF5, including TIFF, in file selection, sequence navigation, watch mode, and directory processing.
+- Added generic source metadata exports for non-HDF5 diffraction image files.
+
 ## [0.5.3] - 2026-06-09
 
 - Forced white backgrounds for Processing Log and File List regardless of OS dark/light mode.
