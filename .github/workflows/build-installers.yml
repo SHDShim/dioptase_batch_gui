@@ -1,0 +1,121 @@
+name: Build standalone applications
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.artifact_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            artifact_name: Windows-x64
+          - os: ubuntu-24.04
+            artifact_name: Linux-x64
+          - os: macos-15
+            artifact_name: macOS-arm64
+          - os: macos-15-intel
+            artifact_name: macOS-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install application and build dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,build]"
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Build standalone application
+        run: python -m PyInstaller --noconfirm --clean packaging/dioptas_batch_gui.spec
+
+      - name: Smoke-test Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & ".\dist\DioptasBatchGUI\DioptasBatchGUI.exe" --smoke-test
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Smoke-test Linux application
+        if: runner.os == 'Linux'
+        run: ./dist/DioptasBatchGUI/DioptasBatchGUI --smoke-test
+
+      - name: Smoke-test macOS application
+        if: runner.os == 'macOS'
+        run: ./dist/'Dioptas Batch GUI.app'/Contents/MacOS/DioptasBatchGUI --smoke-test
+
+      - name: Read package version
+        shell: bash
+        run: echo "APP_VERSION=$(python -c 'from dioptas_batch_gui.version import __version__; print(__version__)')" >> "$GITHUB_ENV"
+
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release-dist | Out-Null
+          $archive = "release-dist/Dioptas-Batch-GUI-$env:APP_VERSION-Windows-x64.zip"
+          Compress-Archive -Path "dist/DioptasBatchGUI/*" -DestinationPath $archive
+          (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() + "  " + (Split-Path $archive -Leaf) |
+            Set-Content "$archive.sha256" -Encoding ascii
+
+      - name: Package Linux application
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release-dist
+          archive="Dioptas-Batch-GUI-${APP_VERSION}-Linux-x64.tar.gz"
+          tar -C dist -czf "release-dist/${archive}" DioptasBatchGUI
+          (cd release-dist && sha256sum "$archive" > "$archive.sha256")
+
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p release-dist
+          archive="Dioptas-Batch-GUI-${APP_VERSION}-${{ matrix.artifact_name }}.dmg"
+          hdiutil create -volname "Dioptas Batch GUI" -srcfolder "dist/Dioptas Batch GUI.app" -ov -format UDZO "release-dist/${archive}"
+          (cd release-dist && shasum -a 256 "$archive" > "$archive.sha256")
+
+      - name: Upload standalone application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Dioptas-Batch-GUI-${{ matrix.artifact_name }}
+          path: release-dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish tagged release assets
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built applications
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Dioptas-Batch-GUI-*
+          path: release-dist
+          merge-multiple: true
+
+      - name: Create GitHub release and upload applications
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" release-dist/* --generate-notes --verify-tag

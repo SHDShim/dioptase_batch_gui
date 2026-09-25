@@ -65,6 +65,28 @@ pip install dioptas
 pip install dioptas-batch-gui
 ```
 
+## Standalone Applications
+
+GitHub Actions builds self-contained applications that do not require a
+separate Python or conda installation:
+
+- Windows x64: ZIP archive containing `DioptasBatchGUI.exe`.
+- Linux x64: compressed application directory (`.tar.gz`).
+- macOS Apple Silicon and Intel: disk images (`.dmg`).
+
+Open **Actions → Build standalone applications → Run workflow** in GitHub to
+make downloadable workflow artifacts. Pushing a version tag such as `v0.5.5`
+runs the same builds and attaches all applications and SHA-256 checksums to a
+GitHub release. The macOS builds are ad-hoc signed, not Apple-notarized, so
+Gatekeeper may require the user to approve the application on first launch.
+
+To reproduce the standalone build on the current operating system:
+
+```bash
+python -m pip install -e ".[build]"
+python -m PyInstaller --noconfirm --clean packaging/dioptas_batch_gui.spec
+```
+
 ## Update to the latest PyPI release
 
 ```bash

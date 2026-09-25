@@ -32,6 +32,9 @@ dev = [
   "pytest",
   "ruff",
 ]
+build = [
+  "pyinstaller>=6.12,<7",
+]
 
 [project.scripts]
 dbg = "dioptas_batch_gui.gui:main"

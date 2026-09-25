@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added PyInstaller configuration for standalone Windows, Linux, and macOS applications.
+- Added GitHub Actions builds for Windows x64, Linux x64, macOS Apple Silicon, and macOS Intel.
+- Added automatic SHA-256 checksums and tagged-release asset publishing.
+
 ## [0.5.5] - 2026-06-22
 
 - Added support for Dioptas-readable XRD image formats beyond H5/HDF5, including TIFF, in file selection, sequence navigation, watch mode, and directory processing.
