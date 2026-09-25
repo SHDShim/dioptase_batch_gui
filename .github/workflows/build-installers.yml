@@ -37,8 +37,19 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      - name: Install Linux GUI runtime libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libegl1
+
       - name: Install application and build dependencies
+        if: matrix.artifact_name != 'macOS-x64'
         run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,build]"
+
+      - name: Install Intel macOS dependencies
+        if: matrix.artifact_name == 'macOS-x64'
+        env:
+          ARCHFLAGS: "-arch x86_64"
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,build]" "PyOpenGL-accelerate==3.1.7"
 
       - name: Run tests
         run: python -m pytest -q
@@ -50,8 +61,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          & ".\dist\DioptasBatchGUI\DioptasBatchGUI.exe" --smoke-test
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $process = Start-Process -FilePath ".\dist\DioptasBatchGUI\DioptasBatchGUI.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { exit 1 }
 
       - name: Smoke-test Linux application
         if: runner.os == 'Linux'
