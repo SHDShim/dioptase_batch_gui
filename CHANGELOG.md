@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-10-24
+
+- Limited source-image discovery in all modes to the selected diffraction formats, including `.hdf`.
+- Added a Watch Directory note that subdirectories are ignored.
+- Added a live watch-mode auto-stop countdown that follows file activity and timeout changes.
+
 ## [0.5.7] - 2026-10-24
 
 - Limited watch-mode startup scanning and live file monitoring to the selected directory; subfolders are ignored.

@@ -9,6 +9,7 @@ import os
 import time
 import logging
 import re
+from math import ceil
 from html import escape
 from datetime import datetime
 from pathlib import Path
@@ -460,6 +461,7 @@ class DioptasBatchGUI(QMainWindow):
         self.watch_dir_btn.clicked.connect(self._browse_watch_dir)
         watch_layout.addWidget(self.watch_dir_btn)
         layout.addLayout(watch_layout)
+        layout.addWidget(QLabel("Only files in this directory are watched; subdirectories are ignored."))
 
         combined_watch_layout = QHBoxLayout()
         
@@ -473,8 +475,10 @@ class DioptasBatchGUI(QMainWindow):
         self.watch_idle_timeout_spin.setToolTip(
             "Stop watch mode automatically after this many idle minutes with no new file activity."
         )
-        self.watch_idle_timeout_spin.valueChanged.connect(lambda _value: self._save_settings())
+        self.watch_idle_timeout_spin.valueChanged.connect(self._on_watch_idle_timeout_changed)
         idle_group.layout().addWidget(self.watch_idle_timeout_spin)
+        self.watch_countdown_label = QLabel("Auto-stop in: --:--:--")
+        idle_group.layout().addWidget(self.watch_countdown_label)
         combined_watch_layout.addWidget(idle_group)
         combined_watch_layout.addSpacing(20)
         
@@ -1019,6 +1023,33 @@ class DioptasBatchGUI(QMainWindow):
         """Return the configured watch auto-stop timeout in seconds."""
         return int(self.watch_idle_timeout_spin.value()) * 60
 
+    def _on_watch_idle_timeout_changed(self, _value):
+        """Save the new timeout and refresh the displayed deadline."""
+        self._save_settings()
+        self._update_watch_countdown()
+
+    def _watch_idle_remaining_seconds(self) -> float:
+        """Return time left until the same deadline used by watch auto-stop."""
+        return (
+            self.file_watcher.get_last_activity_time()
+            + self._current_watch_inactivity_timeout_seconds()
+            - time.time()
+        )
+
+    def _update_watch_countdown(self, remaining_seconds: float | None = None):
+        """Show the watch auto-stop countdown or an inactive placeholder."""
+        if self.file_watcher is None:
+            self.watch_countdown_label.setText("Auto-stop in: --:--:--")
+            return
+        if remaining_seconds is None:
+            remaining_seconds = self._watch_idle_remaining_seconds()
+        seconds = max(0, ceil(remaining_seconds))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        self.watch_countdown_label.setText(
+            f"Auto-stop in: {hours:02d}:{minutes:02d}:{seconds:02d}"
+        )
+
     def _dated_output_folder_name(self) -> str:
         """Return the per-day processed subfolder name."""
         return f"processed-{datetime.now().strftime('%Y-%m-%d')}"
@@ -1351,6 +1382,7 @@ class DioptasBatchGUI(QMainWindow):
             
             # Start timer to check for files
             self.check_timer.start(1000)  # Check every second
+            self._update_watch_countdown()
             
             # Update UI
             self._set_watch_toggle_state(True)
@@ -1369,6 +1401,7 @@ class DioptasBatchGUI(QMainWindow):
         if self.file_watcher:
             self.file_watcher.stop()
             self.file_watcher = None
+        self._update_watch_countdown()
             
         self.check_timer.stop()
 
@@ -1411,13 +1444,13 @@ class DioptasBatchGUI(QMainWindow):
         if not self.file_watcher:
             return
 
+        remaining_seconds = self._watch_idle_remaining_seconds()
+        self._update_watch_countdown(remaining_seconds)
+
         if self.processing_thread is not None:
             return
 
-        if (
-            time.time() - self.file_watcher.get_last_activity_time()
-            >= self._current_watch_inactivity_timeout_seconds()
-        ):
+        if remaining_seconds <= 0:
             self._stop_watching_for_inactivity()
             return
             

@@ -1,23 +1,47 @@
+import re
 from types import SimpleNamespace
 
 import pytest
 
 from dioptas_batch_gui.file_watcher import FileWatcher, LambdaFileHandler
-from dioptas_batch_gui.supported_formats import has_supported_image_extension
+from dioptas_batch_gui.supported_formats import (
+    DIFFRACTION_IMAGE_EXTENSIONS,
+    has_hdf5_extension,
+    has_supported_image_extension,
+    image_file_regex,
+    qt_image_file_filter,
+)
 from test_batch_processor_metadata import _processor
 
 
-def test_generated_cake_arrays_are_not_source_images():
+def test_only_listed_extensions_are_selected():
+    assert set(DIFFRACTION_IMAGE_EXTENSIONS) == {
+        ".tif", ".tiff", ".edf", ".cbf", ".h5", ".hdf", ".hdf5", ".nxs",
+        ".img", ".sfrm", ".dm3", ".xml", ".kccd", ".msk",
+        ".spr", ".mccd", ".mar3450", ".pnm",
+    }
+    pattern = re.compile(image_file_regex(), re.IGNORECASE)
+    for extension in DIFFRACTION_IMAGE_EXTENSIONS:
+        assert has_supported_image_extension(f"scan_0001{extension}")
+        assert pattern.match(f"scan_0001{extension}")
+        assert f"*{extension}" in qt_image_file_filter()
+
     for name in (
         "scan_0001.int.cake.npy",
         "scan_0001.tth.cake.npy",
         "scan_0001.azi.cake.npy",
         "SCAN_0001.INT.CAKE.NPY",
+        "raw_image.npy",
+        "raw_image.npz",
+        "scan_0001.kcd",
+        "scan_0001.png",
     ):
         assert not has_supported_image_extension(name)
+        assert not pattern.match(name)
 
-    for name in ("scan_0001.h5", "scan_0001.nxs", "scan_0001.tiff", "raw_image.npy"):
-        assert has_supported_image_extension(name)
+    assert "All Files" not in qt_image_file_filter()
+    assert has_hdf5_extension("scan_0001.h5")
+    assert has_hdf5_extension("scan_0001.hdf")
 
 
 def test_watcher_ignores_generated_cake_events(tmp_path):
@@ -36,13 +60,29 @@ def test_watcher_ignores_generated_cake_events(tmp_path):
     assert str(source) in handler.pending_files
 
 
+def test_watcher_tracks_only_listed_extensions(tmp_path):
+    handler = LambdaFileHandler(file_queue=None)
+    accepted = [tmp_path / f"scan_0001{extension}" for extension in DIFFRACTION_IMAGE_EXTENSIONS]
+    rejected = [
+        tmp_path / name
+        for name in ("scan_0001.npy", "scan_0001.npz", "scan_0001.png")
+    ]
+
+    for path in accepted + rejected:
+        path.touch()
+        handler.on_created(SimpleNamespace(is_directory=False, src_path=str(path)))
+
+    assert set(handler.pending_files) == {str(path) for path in accepted}
+
+
 def test_watcher_scans_and_observes_only_root_files(tmp_path, monkeypatch):
     root_image = tmp_path / "scan_0001.h5"
     nested_dir = tmp_path / "processed"
     nested_dir.mkdir()
     nested_image = nested_dir / "scan_0002.h5"
     cake = tmp_path / "scan_0001.int.cake.npy"
-    for path in (root_image, nested_image, cake):
+    excluded = tmp_path / "scan_0001.png"
+    for path in (root_image, nested_image, cake, excluded):
         path.touch()
 
     class FakeObserver:

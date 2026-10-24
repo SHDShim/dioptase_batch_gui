@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.7"
+__version__ = "0.5.8"
 
 """
+0.5.8 Restrict XRD source formats, add HDF support, and show the watch auto-stop countdown.
 0.5.7 Limit watch-mode image discovery to the selected directory; ignore subfolders.
 0.5.6 Exclude generated CAKE arrays from diffraction image discovery and processing; add standalone installer builds.
 0.5.5 Add support for Dioptas-readable XRD image formats beyond H5/HDF5, including TIFF; non-HDF5 sources now receive generic metadata exports.

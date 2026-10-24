@@ -6,52 +6,35 @@ import re
 from pathlib import Path
 
 
-# Dioptas ImgModel loads images through PIL, fabIO, Lambda, Karabo, and HDF5
-# loaders. Keep this list extension-based for GUI filters and watch-mode
-# discovery; manual "All Files" selection remains available for unusual files.
+# Extensions explicitly selected for batch, sequence, and watch processing.
 DIFFRACTION_IMAGE_EXTENSIONS = (
-    ".h5",
-    ".hdf",
-    ".hdf5",
-    ".nxs",
     ".tif",
     ".tiff",
     ".edf",
     ".cbf",
-    ".mar3450",
-    ".mar2300",
-    ".mar2300.gz",
-    ".marccd",
-    ".mccd",
+    ".h5",
+    ".hdf",
+    ".hdf5",
+    ".nxs",
     ".img",
     ".sfrm",
     ".dm3",
-    ".kcd",
+    ".xml",
+    ".kccd",
     ".msk",
     ".spr",
-    ".ge",
+    ".mccd",
+    ".mar3450",
     ".pnm",
-    ".pgm",
-    ".pbm",
-    ".fit2d",
-    ".spe",
-    ".mrc",
-    ".npy",
-    ".npz",
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".bmp",
 )
 
 HDF5_EXTENSIONS = (".h5", ".hdf", ".hdf5", ".nxs")
-GENERATED_CAKE_SUFFIXES = (".int.cake.npy", ".tth.cake.npy", ".azi.cake.npy")
 
 
 def has_supported_image_extension(path: str | Path) -> bool:
-    """Return True for a Dioptas image, excluding this application's cake outputs."""
+    """Return True when a path has one of the selected source-image extensions."""
     name = str(path).lower()
-    return not name.endswith(GENERATED_CAKE_SUFFIXES) and any(
+    return any(
         name.endswith(extension) for extension in DIFFRACTION_IMAGE_EXTENSIONS
     )
 
@@ -71,6 +54,6 @@ def image_file_regex() -> str:
 
 
 def qt_image_file_filter() -> str:
-    """Return the QFileDialog filter string for Dioptas-readable image files."""
+    """Return the QFileDialog filter for selected diffraction image formats."""
     patterns = " ".join(f"*{extension}" for extension in DIFFRACTION_IMAGE_EXTENSIONS)
-    return f"Dioptas Image Files ({patterns});;All Files (*)"
+    return f"Dioptas Image Files ({patterns})"
