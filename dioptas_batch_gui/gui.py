@@ -1329,12 +1329,7 @@ class DioptasBatchGUI(QMainWindow):
             self.file_watcher.start()
             
             # Check for existing files in the directory and queue them
-            watch_path = Path(self.watch_dir_edit.text())
-            existing_files = [
-                str(path)
-                for path in watch_path.rglob("*")
-                if path.is_file() and has_supported_image_extension(path)
-            ]
+            existing_files = self.file_watcher.get_existing_files()
             
             if existing_files:
                 # Check which file sets haven't been processed yet.

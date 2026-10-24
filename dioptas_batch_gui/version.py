@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.6"
+__version__ = "0.5.7"
 
 """
+0.5.7 Limit watch-mode image discovery to the selected directory; ignore subfolders.
 0.5.6 Exclude generated CAKE arrays from diffraction image discovery and processing; add standalone installer builds.
 0.5.5 Add support for Dioptas-readable XRD image formats beyond H5/HDF5, including TIFF; non-HDF5 sources now receive generic metadata exports.
 0.5.4 Replace Output Directory radio buttons with Auto checkbox; browse dialogs now default to /Volumes to show external and network drives.

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-10-24
+
+- Limited watch-mode startup scanning and live file monitoring to the selected directory; subfolders are ignored.
+
 ## [0.5.6] - 2026-10-23
 
 - Excluded generated CAKE NPY arrays from watch, batch, and sequence source-image selection.

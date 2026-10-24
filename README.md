@@ -4,7 +4,7 @@ Standalone GUI for automated batch processing of diffraction image files using D
 
 ## Features
 
-- Folder watch mode for automatic processing of incoming Dioptas-readable image files, including `.nxs`, `.h5`, `.tif`, and `.tiff`
+- Folder watch mode for automatic processing of incoming Dioptas-readable image files in the selected directory only, including `.nxs`, `.h5`, `.tif`, and `.tiff`
 - Manual batch mode for selected files
 - CHI export (1D integration)
 - NPY export (2D cake arrays: intensity, two-theta, azimuth)

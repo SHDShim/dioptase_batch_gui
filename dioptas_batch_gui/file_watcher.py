@@ -206,7 +206,7 @@ class FileWatcher:
         self.observer.schedule(
             self.event_handler, 
             str(self.watch_directory), 
-            recursive=True
+            recursive=False
         )
         self.observer.start()
         self.is_running = True
@@ -229,6 +229,14 @@ class FileWatcher:
             List of file paths ready to be processed
         """
         return self.event_handler.check_complete_files()
+
+    def get_existing_files(self):
+        """Return supported image files directly in the watched directory."""
+        return [
+            str(path)
+            for path in self.watch_directory.iterdir()
+            if path.is_file() and has_supported_image_extension(path)
+        ]
         
     def get_pending_count(self):
         """Get number of files currently being written."""

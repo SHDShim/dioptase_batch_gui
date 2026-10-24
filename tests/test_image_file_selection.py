@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from dioptas_batch_gui.file_watcher import LambdaFileHandler
+from dioptas_batch_gui.file_watcher import FileWatcher, LambdaFileHandler
 from dioptas_batch_gui.supported_formats import has_supported_image_extension
 from test_batch_processor_metadata import _processor
 
@@ -34,6 +34,32 @@ def test_watcher_ignores_generated_cake_events(tmp_path):
     assert handler.pending_files == {}
     handler.on_created(SimpleNamespace(is_directory=False, src_path=str(source)))
     assert str(source) in handler.pending_files
+
+
+def test_watcher_scans_and_observes_only_root_files(tmp_path, monkeypatch):
+    root_image = tmp_path / "scan_0001.h5"
+    nested_dir = tmp_path / "processed"
+    nested_dir.mkdir()
+    nested_image = nested_dir / "scan_0002.h5"
+    cake = tmp_path / "scan_0001.int.cake.npy"
+    for path in (root_image, nested_image, cake):
+        path.touch()
+
+    class FakeObserver:
+        def schedule(self, _handler, path, recursive):
+            self.path = path
+            self.recursive = recursive
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr("dioptas_batch_gui.file_watcher.Observer", FakeObserver)
+    watcher = FileWatcher(str(tmp_path))
+
+    assert watcher.get_existing_files() == [str(root_image)]
+    watcher.start()
+    assert watcher.observer.path == str(tmp_path)
+    assert watcher.observer.recursive is False
 
 
 def test_processor_groups_only_source_images(tmp_path, monkeypatch):
