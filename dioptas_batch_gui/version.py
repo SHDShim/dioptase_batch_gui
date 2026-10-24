@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.5.5"
+__version__ = "0.5.6"
 
 """
+0.5.6 Exclude generated CAKE arrays from diffraction image discovery and processing; add standalone installer builds.
 0.5.5 Add support for Dioptas-readable XRD image formats beyond H5/HDF5, including TIFF; non-HDF5 sources now receive generic metadata exports.
 0.5.4 Replace Output Directory radio buttons with Auto checkbox; browse dialogs now default to /Volumes to show external and network drives.
 0.5.3 Forced white backgrounds for Processing Log and File List regardless of OS dark/light mode; updated legend text to white; changed latest-processed highlight from yellow/purple to blue; set file-list header font to black.

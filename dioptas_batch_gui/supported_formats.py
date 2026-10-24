@@ -45,12 +45,15 @@ DIFFRACTION_IMAGE_EXTENSIONS = (
 )
 
 HDF5_EXTENSIONS = (".h5", ".hdf", ".hdf5", ".nxs")
+GENERATED_CAKE_SUFFIXES = (".int.cake.npy", ".tth.cake.npy", ".azi.cake.npy")
 
 
 def has_supported_image_extension(path: str | Path) -> bool:
-    """Return True when a path has a known Dioptas image extension."""
+    """Return True for a Dioptas image, excluding this application's cake outputs."""
     name = str(path).lower()
-    return any(name.endswith(extension) for extension in DIFFRACTION_IMAGE_EXTENSIONS)
+    return not name.endswith(GENERATED_CAKE_SUFFIXES) and any(
+        name.endswith(extension) for extension in DIFFRACTION_IMAGE_EXTENSIONS
+    )
 
 
 def has_hdf5_extension(path: str | Path) -> bool:

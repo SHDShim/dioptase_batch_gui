@@ -302,6 +302,9 @@ class BatchProcessor:
         single_files = []
         
         for file_path in file_list:
+            if not has_supported_image_extension(file_path):
+                logger.info(f"Ignoring non-image input: {file_path}")
+                continue
             # Check if this is a multi-module Lambda file (has _m1, _m2, or _m3)
             if re.search(r'_m[1-3](_part\d+)?\.(nxs|h5|hdf|hdf5)$', file_path, re.IGNORECASE):
                 # Multi-module Lambda file
@@ -1078,6 +1081,9 @@ class BatchProcessor:
         Returns:
             Dictionary with processing statistics
         """
+        if not file_set or any(not has_supported_image_extension(path) for path in file_set):
+            raise ValueError("File set must contain supported diffraction image files")
+
         stats = {
             'total_images': 0,
             'processed': 0,

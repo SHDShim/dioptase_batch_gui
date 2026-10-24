@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-10-23
+
+- Excluded generated CAKE NPY arrays from watch, batch, and sequence source-image selection.
 - Added PyInstaller configuration for standalone Windows, Linux, and macOS applications.
 - Added GitHub Actions builds for Windows x64, Linux x64, macOS Apple Silicon, and macOS Intel.
 - Added automatic SHA-256 checksums and tagged-release asset publishing.

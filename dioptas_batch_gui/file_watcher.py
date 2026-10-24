@@ -14,7 +14,11 @@ from queue import Queue
 import re
 import h5py
 
-from .supported_formats import has_hdf5_extension, image_file_regex
+from .supported_formats import (
+    has_hdf5_extension,
+    has_supported_image_extension,
+    image_file_regex,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +90,7 @@ class LambdaFileHandler(FileSystemEventHandler):
         file_path = event.src_path
         
         # Check if file matches pattern
-        if not self.file_pattern.match(file_path):
+        if not self.file_pattern.match(file_path) or not has_supported_image_extension(file_path):
             return
             
         logger.info(f"Detected new file: {file_path}")
@@ -99,7 +103,7 @@ class LambdaFileHandler(FileSystemEventHandler):
             
         file_path = event.src_path
         
-        if self.file_pattern.match(file_path):
+        if self.file_pattern.match(file_path) and has_supported_image_extension(file_path):
             self._track_pending_file(file_path)
 
     def on_moved(self, event):
@@ -108,7 +112,7 @@ class LambdaFileHandler(FileSystemEventHandler):
             return
 
         file_path = event.dest_path
-        if self.file_pattern.match(file_path):
+        if self.file_pattern.match(file_path) and has_supported_image_extension(file_path):
             logger.info(f"Detected moved file: {file_path}")
             self._track_pending_file(file_path)
             

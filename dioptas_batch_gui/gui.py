@@ -788,8 +788,8 @@ class DioptasBatchGUI(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Sequence Error",
-                "The selected file name must contain a sequence number, either at the end "
-                "or immediately after 'map'."
+                "Select a diffraction image whose file name contains a sequence number, "
+                "either at the end or immediately after 'map'."
             )
             return
 
@@ -803,6 +803,8 @@ class DioptasBatchGUI(QMainWindow):
     def _set_sequence_file(self, file_path: str) -> bool:
         """Store sequence metadata for a numbered file path."""
         path = Path(file_path)
+        if not has_supported_image_extension(path):
+            return False
         match = re.search(r"map[_-]*(\d+)", path.stem, re.IGNORECASE)
         if not match:
             match = re.search(r"(\d+)$", path.stem)
