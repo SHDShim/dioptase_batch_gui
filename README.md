@@ -149,6 +149,9 @@ python -m dioptas_batch_gui
 4. Optionally select a **Mask File**.
 5. Configure integration points and azimuth bins.
 6. Choose the export options you want.
+   For large multi-frame files, optionally check **Use two workers for multi-frame files**.
+   Each worker has its own Dioptas configuration; this uses more memory. The
+   option is off by default and single-frame files run serially.
 7. Click **Start Watching** for automatic mode or **Process** for manual batch mode.
 8. Click **Stop Watching** when finished with auto-processing.
 

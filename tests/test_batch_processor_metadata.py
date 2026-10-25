@@ -6,6 +6,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+import pytest
 
 
 class _FakeSignalModel:
@@ -383,3 +384,112 @@ def test_process_file_set_stops_when_cancellation_is_requested(tmp_path, monkeyp
     assert stats["cancelled"] is True
     assert stats["processed"] == 1
     assert len(processed_images) == 1
+
+
+def test_sequential_frames_reuse_dioptas_series_reader(tmp_path, monkeypatch):
+    processor = _processor(tmp_path, monkeypatch)
+    image_model = processor.config.img_model
+    calls = []
+    image_model.series_get_image = lambda index: np.full((4, 4), index)
+
+    def load(_path, index):
+        calls.append(("open", index))
+
+    def load_series_img(position):
+        calls.append(("series", position))
+
+    monkeypatch.setattr(image_model, "load", load)
+    monkeypatch.setattr(image_model, "load_series_img", load_series_img, raising=False)
+    source = str(tmp_path / "map.h5")
+
+    for index in range(3):
+        processor._load_image_into_config([source], index)
+
+    assert calls == [("open", 0), ("series", 2), ("series", 3)]
+
+
+def test_metadata_source_tree_is_reused_across_snapshots(tmp_path, monkeypatch):
+    source = tmp_path / "map.h5"
+    _write_hdf5(source, n_images=3)
+    processor = _processor(tmp_path, monkeypatch)
+    original = processor._export_source_file_metadata
+    calls = []
+
+    def counted(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(processor, "_export_source_file_metadata", counted)
+    for index in range(3):
+        processor.export_metadata_for_image([str(source)], index, f"map_{index:03d}")
+
+    assert len(calls) == 1
+    for index in range(3):
+        metadata_path = processor._build_output_paths(f"map_{index:03d}")["metadata_path"]
+        assert json.loads(metadata_path.read_text())["image_index"] == index
+
+
+def test_selected_frame_indices_keep_full_file_snapshot_names(tmp_path, monkeypatch):
+    source = tmp_path / "map.h5"
+    _write_hdf5(source, n_images=4)
+    processor = _processor(tmp_path, monkeypatch)
+    names = []
+
+    def fake_process(file_set, image_index, base_output_name, *args, **kwargs):
+        names.append((image_index, base_output_name))
+        return {"success": True}
+
+    monkeypatch.setattr(processor, "process_lambda_image", fake_process)
+    stats = processor.process_file_set([str(source)], image_indices=[2, 3])
+
+    assert stats["total_images"] == 2
+    assert stats["processed"] == 2
+    assert names == [(2, "map_003"), (3, "map_004")]
+
+
+def test_two_worker_option_routes_multi_frame_file(tmp_path, monkeypatch):
+    source = tmp_path / "map.h5"
+    _write_hdf5(source, n_images=4)
+    processor = _processor(tmp_path, monkeypatch)
+    captured = []
+
+    def fake_parallel(file_set, n_images, options, progress_callback, estimate_callback,
+                      should_continue):
+        captured.append((file_set, n_images, options["export_cake_npy"]))
+        return {"total_images": n_images, "processed": n_images}
+
+    monkeypatch.setattr(processor, "_process_file_set_parallel", fake_parallel)
+    stats = processor.process_file_set([str(source)], workers=2, export_cake_npy=False)
+
+    assert stats["processed"] == 4
+    assert captured == [([str(source)], 4, False)]
+
+
+def test_atomic_pattern_write_preserves_existing_file_on_failure(tmp_path, monkeypatch):
+    processor = _processor(tmp_path, monkeypatch)
+    destination = processor.output_directory / "pattern.chi"
+    destination.write_text("existing\n")
+
+    def interrupted_save(path):
+        Path(path).write_text("partial\n")
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(processor.config, "save_pattern", interrupted_save)
+    with pytest.raises(OSError, match="interrupted"):
+        processor._save_pattern_atomic(destination)
+
+    assert destination.read_text() == "existing\n"
+    assert list(processor.output_directory.glob(".*.chi")) == []
+
+
+def test_atomic_pattern_header_names_final_file(tmp_path, monkeypatch):
+    processor = _processor(tmp_path, monkeypatch)
+    destination = processor.output_directory / "pattern.chi"
+
+    def save_with_filename_header(path):
+        Path(path).write_text(f"{path}\n1 2\n")
+
+    monkeypatch.setattr(processor.config, "save_pattern", save_with_filename_header)
+    processor._save_pattern_atomic(destination)
+
+    assert destination.read_text() == f"{destination}\n1 2\n"

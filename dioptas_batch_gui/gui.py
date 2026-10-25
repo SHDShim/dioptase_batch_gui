@@ -8,6 +8,7 @@ import sys
 import os
 import time
 import logging
+import multiprocessing
 import re
 from math import ceil
 from html import escape
@@ -65,6 +66,7 @@ class ProcessingThread(QThread):
         export_metadata,
         apply_mask_to_chi,
         apply_mask_to_cake,
+        parallel_workers=1,
     ):
         super().__init__()
         self.processor = processor
@@ -76,6 +78,7 @@ class ProcessingThread(QThread):
         self.export_metadata = export_metadata
         self.apply_mask_to_chi = apply_mask_to_chi
         self.apply_mask_to_cake = apply_mask_to_cake
+        self.parallel_workers = parallel_workers
         
     def run(self):
         """Process files in background."""
@@ -92,6 +95,7 @@ class ProcessingThread(QThread):
                 progress_callback=self._progress_callback,
                 estimate_callback=self._estimate_callback,
                 should_continue=self._should_continue,
+                workers=self.parallel_workers,
             )
             self.result_ready.emit(stats)
         except Exception as e:
@@ -368,6 +372,13 @@ class DioptasBatchGUI(QMainWindow):
         overwrite_layout.addWidget(self.overwrite_cb)
         overwrite_layout.addStretch()
         options_layout.addLayout(overwrite_layout)
+
+        self.parallel_workers_cb = QCheckBox("Use two workers for multi-frame files")
+        self.parallel_workers_cb.setChecked(False)
+        self.parallel_workers_cb.setToolTip(
+            "Process two frame ranges at once. Uses more memory; single-frame files stay serial."
+        )
+        options_layout.addWidget(self.parallel_workers_cb)
         
         options_group.setLayout(options_layout)
         left_layout.addWidget(options_group)
@@ -989,6 +1000,7 @@ class DioptasBatchGUI(QMainWindow):
         self.export_metadata_cb.setChecked(settings.value("export_metadata", True, type=bool))
         self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
         self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
+        self.parallel_workers_cb.setChecked(settings.value("parallel_workers_two", False, type=bool))
         output_mode = settings.value("output_mode", "auto")
         selected_output_dir = settings.value("selected_output_dir", "")
         self.output_dir_edit.setText(selected_output_dir)
@@ -1014,6 +1026,7 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("export_metadata", self.export_metadata_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
+        settings.setValue("parallel_workers_two", self.parallel_workers_cb.isChecked())
         settings.setValue("output_mode", "custom" if not self.output_auto_cb.isChecked() else "auto")
         if not self.output_auto_cb.isChecked():
             settings.setValue("selected_output_dir", self.output_dir_edit.text())
@@ -1500,6 +1513,7 @@ class DioptasBatchGUI(QMainWindow):
             self.export_metadata_cb.isChecked(),
             self.apply_mask_to_chi_cb.isChecked(),
             self.apply_mask_to_cake_cb.isChecked(),
+            2 if self.parallel_workers_cb.isChecked() else 1,
         )
         self.processing_thread.progress.connect(self._update_progress)
         self.processing_thread.result_ready.connect(self._store_processing_result)
@@ -1877,6 +1891,7 @@ class DioptasBatchGUI(QMainWindow):
 
 def main():
     """Main entry point."""
+    multiprocessing.freeze_support()
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     icon = load_app_icon()

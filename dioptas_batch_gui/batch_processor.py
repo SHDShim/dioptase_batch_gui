@@ -7,6 +7,10 @@ Processes Lambda detector files and exports to CHI/XY/DAT and NPY formats.
 import os
 import re
 import logging
+import multiprocessing
+import queue
+import shutil
+import uuid
 import numpy as np
 import json
 from pathlib import Path
@@ -30,6 +34,32 @@ logger = logging.getLogger(__name__)
 METADATA_SCHEMA_VERSION = "1.0"
 METADATA_FILE_SUFFIX = ".metadata.v1.json"
 MAX_INLINE_DATASET_ITEMS = 10000
+
+
+def _parallel_file_worker(config_kwargs, file_set, image_indices, options, messages, stop_event):
+    """Run one contiguous frame range with a process-local Dioptas configuration."""
+    handler = logging.Handler()
+    handler.emit = lambda record: messages.put(
+        ("log", (record.levelno, record.getMessage()))
+    )
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+    try:
+        processor = BatchProcessor(**config_kwargs)
+        stats = processor.process_file_set(
+            file_set,
+            **options,
+            image_indices=image_indices,
+            progress_callback=lambda current, total, message: messages.put(("progress", message)),
+            estimate_callback=lambda points: messages.put(("estimate", points)),
+            should_continue=lambda: not stop_event.is_set(),
+        )
+        messages.put(("result", stats))
+    except Exception as exc:
+        messages.put(("error", str(exc)))
+    finally:
+        root_logger.removeHandler(handler)
 
 
 class BatchProcessor:
@@ -66,6 +96,9 @@ class BatchProcessor:
         self.integration_method = integration_method
         self.cake_azimuth_points = cake_azimuth_points
         self.overwrite = overwrite
+        self._loaded_series_file = None
+        self._loaded_series_index = None
+        self._source_metadata_cache = {}
         
         self.set_output_directory(output_directory)
         
@@ -213,9 +246,29 @@ class BatchProcessor:
             self.config.img_model.blockSignals(False)
             return
 
-        self.config.img_model.blockSignals(True)
-        self.config.img_model.load(file_set[0], image_index)
-        self.config.img_model.blockSignals(False)
+        image_model = self.config.img_model
+        image_model.blockSignals(True)
+        try:
+            # Dioptas keeps the frame reader on the image model. Reuse it for
+            # sequential snapshots instead of reopening a large HDF5 file.
+            if (
+                self._loaded_series_file == file_set[0]
+                and self._loaded_series_index is not None
+                and image_index == self._loaded_series_index + 1
+                and callable(getattr(image_model, "load_series_img", None))
+                and getattr(image_model, "series_get_image", None) is not None
+            ):
+                image_model.load_series_img(image_index + 1)
+            else:
+                image_model.load(file_set[0], image_index)
+            self._loaded_series_file = file_set[0]
+            self._loaded_series_index = image_index
+        except Exception:
+            self._loaded_series_file = None
+            self._loaded_series_index = None
+            raise
+        finally:
+            image_model.blockSignals(False)
 
     def estimate_integration_points(self) -> int:
         """
@@ -614,6 +667,7 @@ class BatchProcessor:
         file_set: List[str],
         image_index: int,
         base_output_name: str,
+        source_files: Optional[List[dict]] = None,
     ) -> dict:
         """Build the schema-versioned metadata document for one processed image."""
         return {
@@ -622,9 +676,8 @@ class BatchProcessor:
             "created_utc": datetime.now(timezone.utc).isoformat(),
             "output_base_name": base_output_name,
             "image_index": int(image_index),
-            "source_files": [
-                cls._export_source_file_metadata(file_path)
-                for file_path in file_set
+            "source_files": source_files if source_files is not None else [
+                cls._export_source_file_metadata(file_path) for file_path in file_set
             ],
             "provenance": {
                 "source_file_count": len(file_set),
@@ -654,6 +707,43 @@ class BatchProcessor:
             handle.write("\n")
         tmp_path.replace(path)
 
+    @staticmethod
+    def _temporary_output_path(path: Path) -> Path:
+        """Use a unique sibling path while retaining the export format suffix."""
+        return path.with_name(f".{path.stem}.{uuid.uuid4().hex}{path.suffix}")
+
+    def _save_pattern_atomic(self, path: Path):
+        temporary = self._temporary_output_path(path)
+        try:
+            self.config.save_pattern(str(temporary))
+            # Dioptas writes the output filename into some pattern headers.
+            # Keep that header pointing at the published filename.
+            content = temporary.read_bytes()
+            header, separator, body = content.partition(b"\n")
+            header = header.replace(temporary.name.encode(), path.name.encode())
+            temporary.write_bytes(header + separator + body)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def _save_npy_atomic(cls, path: Path, array):
+        temporary = cls._temporary_output_path(path)
+        try:
+            np.save(str(temporary), array)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @classmethod
+    def _copy_file_atomic(cls, source: str | Path, destination: Path):
+        temporary = cls._temporary_output_path(destination)
+        try:
+            shutil.copy2(source, temporary)
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def export_metadata_for_image(
         self,
         file_set: List[str],
@@ -670,7 +760,20 @@ class BatchProcessor:
         paths = self._build_output_paths(base_output_name)
         metadata_path = paths["metadata_path"]
         paths["cake_folder"].mkdir(parents=True, exist_ok=True)
-        metadata = self.build_metadata_export(file_set, image_index, base_output_name)
+        source_files = []
+        for file_path in file_set:
+            source_path = Path(file_path).expanduser().resolve()
+            stat = source_path.stat()
+            key = (str(source_path), stat.st_size, stat.st_mtime_ns)
+            if key not in self._source_metadata_cache:
+                self._source_metadata_cache[key] = self._export_source_file_metadata(source_path)
+                # Keep only a few sources in memory during watch mode.
+                while len(self._source_metadata_cache) > 4:
+                    self._source_metadata_cache.pop(next(iter(self._source_metadata_cache)))
+            source_files.append(self._source_metadata_cache[key])
+        metadata = self.build_metadata_export(
+            file_set, image_index, base_output_name, source_files=source_files
+        )
 
         if not metadata_path.exists():
             self._write_json_atomic(metadata_path, metadata)
@@ -830,8 +933,7 @@ class BatchProcessor:
                         paths["cake_folder"].mkdir(parents=True, exist_ok=True)
                         if not paths["poni_dest"].exists():
                             try:
-                                import shutil
-                                shutil.copy2(self.calibration_file, paths["poni_dest"])
+                                self._copy_file_atomic(self.calibration_file, paths["poni_dest"])
                                 logger.debug(f"Copied poni file to {paths['cake_folder']}")
                             except Exception as e:
                                 logger.warning(f"Failed to copy poni file: {e}")
@@ -918,7 +1020,7 @@ class BatchProcessor:
                     if self.overwrite and chi_exists:
                         results['overwritten'] = True
                         self._log_overwrite("CHI file", chi_path)
-                    self.config.save_pattern(str(chi_path))
+                    self._save_pattern_atomic(chi_path)
                     results['chi_file'] = str(chi_path)
                     logger.info(f"Saved CHI file: {chi_path.resolve()}")
 
@@ -933,7 +1035,7 @@ class BatchProcessor:
                     if self.overwrite and xy_exists:
                         results['overwritten'] = True
                         self._log_overwrite("XY file", xy_path)
-                    self.config.save_pattern(str(xy_path))
+                    self._save_pattern_atomic(xy_path)
                     results['xy_file'] = str(xy_path)
                     logger.info(f"Saved XY file: {xy_path.resolve()}")
 
@@ -948,7 +1050,7 @@ class BatchProcessor:
                     if self.overwrite and dat_exists:
                         results['overwritten'] = True
                         self._log_overwrite("DAT file", dat_path)
-                    self.config.save_pattern(str(dat_path))
+                    self._save_pattern_atomic(dat_path)
                     results['dat_file'] = str(dat_path)
                     logger.info(f"Saved DAT file: {dat_path.resolve()}")
                 
@@ -960,14 +1062,13 @@ class BatchProcessor:
                 cake_folder.mkdir(parents=True, exist_ok=True)
                 
                 # Copy poni file to param folder
-                import shutil
                 poni_dest = paths["poni_dest"]
                 if not poni_dest.exists() or self.overwrite:
                     try:
                         if self.overwrite and poni_dest.exists():
                             results['overwritten'] = True
                             self._log_overwrite("PONI file", poni_dest)
-                        shutil.copy2(self.calibration_file, poni_dest)
+                        self._copy_file_atomic(self.calibration_file, poni_dest)
                         logger.debug(f"Copied poni file to {cake_folder}")
                     except Exception as e:
                         logger.warning(f"Failed to copy poni file: {e}")
@@ -1017,17 +1118,17 @@ class BatchProcessor:
                         results['overwritten'] = True
                         self._log_overwrite("CAKE intensity file", int_path)
                     if self.overwrite or not cake_int_exists:
-                        np.save(str(int_path), intensity_cake)
+                        self._save_npy_atomic(int_path, intensity_cake)
                     if self.overwrite and cake_tth_exists:
                         results['overwritten'] = True
                         self._log_overwrite("CAKE two-theta file", tth_path)
                     if self.overwrite or not cake_tth_exists:
-                        np.save(str(tth_path), tth_cake)
+                        self._save_npy_atomic(tth_path, tth_cake)
                     if self.overwrite and cake_azi_exists:
                         results['overwritten'] = True
                         self._log_overwrite("CAKE azimuth file", azi_path)
                     if self.overwrite or not cake_azi_exists:
-                        np.save(str(azi_path), chi_cake)
+                        self._save_npy_atomic(azi_path, chi_cake)
                     results['npy_files'] = [str(int_path), str(tth_path), str(azi_path)]
                     results['npy_file'] = str(int_path)
                     logger.info(
@@ -1052,6 +1153,85 @@ class BatchProcessor:
             
         return results
         
+    def _process_file_set_parallel(
+        self, file_set, n_images, options, progress_callback, estimate_callback,
+        should_continue,
+    ) -> dict:
+        """Process two non-overlapping frame ranges in independent processes."""
+        context = multiprocessing.get_context("spawn")
+        messages = context.Queue()
+        stop_event = context.Event()
+        midpoint = n_images // 2
+        ranges = (list(range(midpoint)), list(range(midpoint, n_images)))
+        config_kwargs = {
+            "calibration_file": self.calibration_file,
+            "output_directory": str(self.output_directory),
+            "mask_file": self.mask_file,
+            "num_points": self.num_points,
+            "integration_method": self.integration_method,
+            "cake_azimuth_points": self.cake_azimuth_points,
+            "overwrite": self.overwrite,
+        }
+        processes = [
+            context.Process(
+                target=_parallel_file_worker,
+                args=(config_kwargs, file_set, indices, options, messages, stop_event),
+            )
+            for indices in ranges
+        ]
+        worker_stats = []
+        started = 0
+        try:
+            for process in processes:
+                process.start()
+            while len(worker_stats) < len(processes):
+                if should_continue is not None and not should_continue():
+                    stop_event.set()
+                try:
+                    kind, payload = messages.get(timeout=0.2)
+                except queue.Empty:
+                    if all(not process.is_alive() for process in processes):
+                        # A child may have exited without delivering its result.
+                        raise RuntimeError("Parallel worker exited without a result")
+                    continue
+                if kind == "log":
+                    logger.log(*payload)
+                elif kind == "progress":
+                    started += 1
+                    if progress_callback:
+                        progress_callback(started, n_images, payload)
+                elif kind == "estimate" and estimate_callback:
+                    estimate_callback(payload)
+                elif kind == "result":
+                    worker_stats.append(payload)
+                elif kind == "error":
+                    stop_event.set()
+                    raise RuntimeError(f"Parallel worker failed: {payload}")
+        finally:
+            stop_event.set()
+            for process in processes:
+                process.join(timeout=10)
+                if process.is_alive():
+                    process.terminate()
+                    process.join()
+            messages.close()
+            messages.join_thread()
+
+        merged = worker_stats[0]
+        for part in worker_stats[1:]:
+            for key in (
+                "processed", "failed", "skipped", "overwritten", "metadata_created",
+                "metadata_updated", "metadata_versioned",
+            ):
+                merged[key] += part[key]
+            for key in ("chi_files", "xy_files", "dat_files", "npy_files", "metadata_files"):
+                merged[key].extend(part[key])
+            merged["cancelled"] = merged["cancelled"] or part["cancelled"]
+        merged["total_images"] = n_images
+        for key in ("chi_files", "xy_files", "dat_files", "npy_files", "metadata_files"):
+            merged[key].sort()
+        return merged
+
     def process_file_set(self, 
                         file_set: List[str],
                         export_chi: bool = True,
@@ -1063,7 +1243,9 @@ class BatchProcessor:
                         export_metadata: bool = True,
                         progress_callback=None,
                         estimate_callback: Optional[Callable[[int], None]] = None,
-                        should_continue: Optional[Callable[[], bool]] = None) -> dict:
+                        should_continue: Optional[Callable[[], bool]] = None,
+                        workers: int = 1,
+                        image_indices: Optional[List[int]] = None) -> dict:
         """
         Process all images in a file set.
         
@@ -1077,6 +1259,8 @@ class BatchProcessor:
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
             progress_callback: Optional callback function(current, total, status_msg)
+            workers: 1 (default) or 2 independent processes for a multi-frame file
+            image_indices: Optional subset used by independent worker processes
             
         Returns:
             Dictionary with processing statistics
@@ -1111,11 +1295,30 @@ class BatchProcessor:
         if n_images == 0:
             logger.error(f"No images found in file set")
             return stats
+
+        if workers == 2 and image_indices is None and len(file_set) == 1 and n_images > 1:
+            logger.info(f"Processing {n_images} images with two worker processes")
+            return self._process_file_set_parallel(
+                file_set, n_images,
+                {
+                    "export_chi": export_chi,
+                    "export_xy": export_xy,
+                    "export_dat": export_dat,
+                    "export_cake_npy": export_cake_npy,
+                    "apply_mask_to_chi": apply_mask_to_chi,
+                    "apply_mask_to_cake": apply_mask_to_cake,
+                    "export_metadata": export_metadata,
+                },
+                progress_callback, estimate_callback, should_continue,
+            )
+
+        indices = range(n_images) if image_indices is None else image_indices
+        stats['total_images'] = len(indices)
             
         logger.info(f"Processing {n_images} images from {base_name}")
         
         # Process each image
-        for img_idx in range(n_images):
+        for img_idx in indices:
             if should_continue is not None and not should_continue():
                 stats['cancelled'] = True
                 logger.info(
