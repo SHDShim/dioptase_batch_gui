@@ -1,9 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.6.0.dev0"
+__version__ = "0.6.0"
 
 """
-0.6.0.dev0 Add optional two-process conversion for multi-frame files, reuse frame readers and metadata, and publish outputs atomically.
+0.6.0 Add optional two-process conversion for multi-frame files, reuse frame readers and metadata, publish outputs atomically, and restore GUI settings and file history.
 0.5.8 Restrict XRD source formats, add HDF support, and show the watch auto-stop countdown.
 0.5.7 Limit watch-mode image discovery to the selected directory; ignore subfolders.
 0.5.6 Exclude generated CAKE arrays from diffraction image discovery and processing; add standalone installer builds.

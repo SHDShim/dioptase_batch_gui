@@ -62,3 +62,35 @@ def test_watch_countdown_matches_idle_deadline_and_resets(monkeypatch):
     finally:
         window.processing_thread = None
         window.close()
+
+
+def test_two_workers_becomes_default_once_and_opt_out_persists(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    saved = {"parallel_workers_two": False}
+
+    class MemorySettings:
+        def __init__(self, *_args):
+            pass
+
+        def value(self, key, default=None, **_kwargs):
+            return saved.get(key, default)
+
+        def setValue(self, key, value):
+            saved[key] = value
+
+        def sync(self):
+            pass
+
+    monkeypatch.setattr(gui_module, "QSettings", MemorySettings)
+    app = QApplication.instance() or QApplication([])
+    first_window = gui_module.DioptasBatchGUI()
+    assert first_window.parallel_workers_cb.isChecked()
+    assert saved["parallel_workers_default_on_migrated"] is True
+
+    first_window.parallel_workers_cb.setChecked(False)
+    first_window.close()
+    second_window = gui_module.DioptasBatchGUI()
+    try:
+        assert not second_window.parallel_workers_cb.isChecked()
+    finally:
+        second_window.close()

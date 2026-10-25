@@ -148,12 +148,16 @@ python -m dioptas_batch_gui
 3. Select the **Calibration File** (`.poni`).
 4. Optionally select a **Mask File**.
 5. Configure integration points and azimuth bins.
-6. Choose the export options you want.
-   For large multi-frame files, optionally check **Use two workers for multi-frame files**.
-   Each worker has its own Dioptas configuration; this uses more memory. The
-   option is off by default and single-frame files run serially.
+6. Choose the export options you want. **Use two workers for multi-frame files**
+   is checked by default. Each worker has its own Dioptas configuration, so this
+   uses more memory. Uncheck it to process serially; single-frame files always
+   run serially.
 7. Click **Start Watching** for automatic mode or **Process** for manual batch mode.
 8. Click **Stop Watching** when finished with auto-processing.
+
+The app restores field values, output and mask options, the active tab, selected
+batch and sequence files, and file-list statuses when reopened. Watch and
+processing jobs do not restart automatically.
 
 ## Output
 

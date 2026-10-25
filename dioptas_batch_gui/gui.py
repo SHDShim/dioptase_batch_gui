@@ -9,6 +9,7 @@ import os
 import time
 import logging
 import multiprocessing
+import json
 import re
 from math import ceil
 from html import escape
@@ -144,6 +145,9 @@ class DioptasBatchGUI(QMainWindow):
         self.requested_images = 0
         self.completed_images = 0
         self.abort_requested = False
+        self._restoring_settings = False
+        self._selected_output_dir = ""
+        self._output_mode_was_auto = True
         
         # Setup logging
         self._setup_logging()
@@ -374,7 +378,7 @@ class DioptasBatchGUI(QMainWindow):
         options_layout.addLayout(overwrite_layout)
 
         self.parallel_workers_cb = QCheckBox("Use two workers for multi-frame files")
-        self.parallel_workers_cb.setChecked(False)
+        self.parallel_workers_cb.setChecked(True)
         self.parallel_workers_cb.setToolTip(
             "Process two frame ranges at once. Uses more memory; single-frame files stay serial."
         )
@@ -978,34 +982,104 @@ class DioptasBatchGUI(QMainWindow):
     def _load_settings(self):
         """Load saved settings."""
         settings = QSettings("Dioptas", "BatchProcessor")
-        self.cal_file_edit.setText(settings.value("cal_file", ""))
-        self.mask_file_edit.setText(settings.value("mask_file", ""))
-        self.watch_dir_edit.setText(settings.value("watch_dir", ""))
-        self.watch_idle_timeout_spin.setValue(
-            settings.value(
-                "watch_idle_timeout_minutes",
-                DEFAULT_WATCH_INACTIVITY_TIMEOUT_MINUTES,
+        self._restoring_settings = True
+        try:
+            self.cal_file_edit.setText(settings.value("cal_file", ""))
+            self.mask_file_edit.setText(settings.value("mask_file", ""))
+            self.watch_dir_edit.setText(settings.value("watch_dir", ""))
+            self.watch_idle_timeout_spin.setValue(settings.value(
+                "watch_idle_timeout_minutes", DEFAULT_WATCH_INACTIVITY_TIMEOUT_MINUTES,
                 type=int,
+            ))
+            self.watch_stable_seconds_spin.setValue(settings.value(
+                "watch_stable_seconds", DEFAULT_WATCH_STABLE_SECONDS, type=int,
+            ))
+            for key, checkbox, default in (
+                ("export_chi", self.export_chi_cb, True),
+                ("export_xy", self.export_xy_cb, False),
+                ("export_dat", self.export_dat_cb, False),
+                ("export_npy", self.export_npy_cb, True),
+                ("export_metadata", self.export_metadata_cb, True),
+                ("apply_mask_to_chi", self.apply_mask_to_chi_cb, True),
+                ("apply_mask_to_cake", self.apply_mask_to_cake_cb, False),
+                ("overwrite", self.overwrite_cb, False),
+            ):
+                checkbox.setChecked(settings.value(key, default, type=bool))
+            if settings.value("parallel_workers_default_on_migrated", False, type=bool):
+                two_workers = settings.value("parallel_workers_two", True, type=bool)
+            else:
+                # Earlier releases saved the old unchecked default as a preference.
+                two_workers = True
+                settings.setValue("parallel_workers_two", True)
+                settings.setValue("parallel_workers_default_on_migrated", True)
+            self.parallel_workers_cb.setChecked(two_workers)
+            integration_points = str(settings.value("last_integration_points", "Auto"))
+            if integration_points == "Auto" or integration_points.isdigit():
+                self.integration_points_edit.setText(integration_points)
+
+            tab_index = settings.value("active_tab", 0, type=int)
+            if 0 <= tab_index < self.mode_tabs.count():
+                self.mode_tabs.setCurrentIndex(tab_index)
+            self.current_mode = ("batch", "sequence", "idle")[self.mode_tabs.currentIndex()]
+            self.sequence_nav_time_rb.setChecked(
+                settings.value("sequence_nav_time", False, type=bool)
             )
-        )
-        self.watch_stable_seconds_spin.setValue(
-            settings.value(
-                "watch_stable_seconds",
-                DEFAULT_WATCH_STABLE_SECONDS,
-                type=int,
-            )
-        )
-        self.export_xy_cb.setChecked(settings.value("export_xy", False, type=bool))
-        self.export_dat_cb.setChecked(settings.value("export_dat", False, type=bool))
-        self.export_metadata_cb.setChecked(settings.value("export_metadata", True, type=bool))
-        self.apply_mask_to_chi_cb.setChecked(settings.value("apply_mask_to_chi", True, type=bool))
-        self.apply_mask_to_cake_cb.setChecked(settings.value("apply_mask_to_cake", False, type=bool))
-        self.parallel_workers_cb.setChecked(settings.value("parallel_workers_two", False, type=bool))
-        output_mode = settings.value("output_mode", "auto")
-        selected_output_dir = settings.value("selected_output_dir", "")
-        self.output_dir_edit.setText(selected_output_dir)
-        self.output_auto_cb.setChecked(output_mode != "custom")
-        self._on_output_mode_changed()
+            self.sequence_nav_name_rb.setChecked(not self.sequence_nav_time_rb.isChecked())
+
+            selected_files = self._read_json_setting(settings, "selected_files_json")
+            self.selected_files = [path for path in selected_files if isinstance(path, str)]
+            sequence_file = settings.value("sequence_file", "")
+            if sequence_file:
+                self._set_sequence_file(str(sequence_file))
+            history = self._read_json_setting(settings, "file_history_json")
+            self.file_history_records = [
+                record for record in history
+                if isinstance(record, dict)
+                and all(isinstance(record.get(key), str) for key in (
+                    "path", "status", "completed_at"
+                ))
+                and record["status"] in {
+                    "pending", "processed", "skipped", "overwritten", "cancelled"
+                }
+            ]
+            self._render_file_history()
+
+            self._selected_output_dir = settings.value("selected_output_dir", "")
+            self.output_dir_edit.setText(self._selected_output_dir)
+            self.output_auto_cb.setChecked(settings.value("output_mode", "auto") != "custom")
+            self._on_output_mode_changed()
+            self._set_batch_mode_controls(False)
+            self._update_sequence_controls()
+
+            saved_status = settings.value("last_status", "Status: Idle")
+            was_active = saved_status.startswith((
+                "Status: Processing", "Status: Watching", "Status: File set",
+                "Status: Sequence", "Status: Abort requested",
+            )) and saved_status != "Status: Sequence file processed"
+            self.status_label.setText("Status: Stopped" if was_active else saved_status)
+            self.stats_label.setText(settings.value("last_stats", self.stats_label.text()))
+            if was_active:
+                self.progress_bar.setMaximum(1)
+                self.progress_bar.setValue(0)
+                self.progress_bar.setFormat("%v/%m images")
+            else:
+                progress_max = max(1, settings.value("progress_max", 1, type=int))
+                self.progress_bar.setMaximum(progress_max)
+                self.progress_bar.setValue(min(
+                    settings.value("progress_value", 0, type=int), progress_max
+                ))
+                self.progress_bar.setFormat("%v/%m images")
+        finally:
+            self._restoring_settings = False
+
+    @staticmethod
+    def _read_json_setting(settings, key):
+        """Return a saved list, ignoring malformed or obsolete settings."""
+        try:
+            value = json.loads(settings.value(key, "[]"))
+            return value if isinstance(value, list) else []
+        except (TypeError, ValueError):
+            return []
 
     def _commit_settings_inputs(self):
         """Commit in-progress widget edits before saving settings."""
@@ -1014,6 +1088,8 @@ class DioptasBatchGUI(QMainWindow):
         
     def _save_settings(self):
         """Save current settings."""
+        if self._restoring_settings:
+            return
         self._commit_settings_inputs()
         settings = QSettings("Dioptas", "BatchProcessor")
         settings.setValue("cal_file", self.cal_file_edit.text())
@@ -1021,15 +1097,29 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("watch_dir", self.watch_dir_edit.text())
         settings.setValue("watch_idle_timeout_minutes", self.watch_idle_timeout_spin.value())
         settings.setValue("watch_stable_seconds", self.watch_stable_seconds_spin.value())
+        settings.setValue("export_chi", self.export_chi_cb.isChecked())
         settings.setValue("export_xy", self.export_xy_cb.isChecked())
         settings.setValue("export_dat", self.export_dat_cb.isChecked())
+        settings.setValue("export_npy", self.export_npy_cb.isChecked())
         settings.setValue("export_metadata", self.export_metadata_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
         settings.setValue("parallel_workers_two", self.parallel_workers_cb.isChecked())
+        settings.setValue("last_integration_points", self.integration_points_edit.text())
+        settings.setValue("overwrite", self.overwrite_cb.isChecked())
+        settings.setValue("active_tab", self.mode_tabs.currentIndex())
+        settings.setValue("sequence_nav_time", self.sequence_nav_time_rb.isChecked())
+        settings.setValue("sequence_file", str(self.sequence_file_path or ""))
+        settings.setValue("selected_files_json", json.dumps(self.selected_files))
+        settings.setValue("file_history_json", json.dumps(self.file_history_records))
+        settings.setValue("last_status", self.status_label.text())
+        settings.setValue("last_stats", self.stats_label.text())
+        settings.setValue("progress_max", self.progress_bar.maximum())
+        settings.setValue("progress_value", self.progress_bar.value())
         settings.setValue("output_mode", "custom" if not self.output_auto_cb.isChecked() else "auto")
         if not self.output_auto_cb.isChecked():
-            settings.setValue("selected_output_dir", self.output_dir_edit.text())
+            self._selected_output_dir = self.output_dir_edit.text()
+        settings.setValue("selected_output_dir", self._selected_output_dir)
         settings.sync()
 
     def _current_watch_inactivity_timeout_seconds(self) -> int:
@@ -1171,6 +1261,8 @@ class DioptasBatchGUI(QMainWindow):
     def _on_output_mode_changed(self):
         """Update output-directory controls for auto or selected-directory mode."""
         auto_mode = self.output_auto_cb.isChecked()
+        if auto_mode and not self._output_mode_was_auto:
+            self._selected_output_dir = self.output_dir_edit.text()
         self.output_dir_btn.setEnabled(not auto_mode)
         if auto_mode:
             self.output_dir_edit.setReadOnly(True)
@@ -1186,9 +1278,11 @@ class DioptasBatchGUI(QMainWindow):
             elif self.selected_files:
                 preview_paths = self.selected_files
             self._set_output_dir_preview_for_paths(preview_paths)
+            self._output_mode_was_auto = True
             self._save_settings()
             return
 
+        self.output_dir_edit.setText(self._selected_output_dir)
         self.output_dir_edit.setReadOnly(False)
         self.output_dir_edit.setPlaceholderText(
             "Select an existing processed output directory"
@@ -1197,6 +1291,7 @@ class DioptasBatchGUI(QMainWindow):
             "Missing products will be added here without replacing existing files "
             "unless overwrite is enabled."
         )
+        self._output_mode_was_auto = False
             
     def _browse_cal_file(self):
         """Browse for calibration file."""
@@ -1880,12 +1975,14 @@ class DioptasBatchGUI(QMainWindow):
         
     def closeEvent(self, event):
         """Handle window close."""
-        self._save_settings()
         if self.file_watcher:
             self._stop_watching()
         if self.processing_thread is not None:
             self._append_log("Waiting for active processing thread to finish before closing...")
             self.processing_thread.wait()
+            self.status_label.setText("Status: Stopped")
+        self._save_settings()
+        logging.getLogger().removeHandler(self.log_handler)
         event.accept()
 
 
