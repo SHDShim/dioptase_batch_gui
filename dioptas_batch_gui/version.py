@@ -1,8 +1,9 @@
 """Single source of truth for package version."""
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 """
+0.6.1 Add conservative Batch parallel controls for files and snapshots, reliable completion progress, confirmed abort with partial-output warning, and purple failed-file status.
 0.6.0 Add optional two-process conversion for multi-frame files, reuse frame readers and metadata, publish outputs atomically, and restore GUI settings and file history.
 0.5.8 Restrict XRD source formats, add HDF support, and show the watch auto-stop countdown.
 0.5.7 Limit watch-mode image discovery to the selected directory; ignore subfolders.

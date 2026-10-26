@@ -24,10 +24,10 @@ from PyQt6.QtWidgets import (
     QHeaderView
 )
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, QSettings, Qt
-from PyQt6.QtGui import QFont, QIcon, QFontMetrics
+from PyQt6.QtGui import QFont, QIcon, QFontMetrics, QColor
 
 from .file_watcher import FileWatcher
-from .batch_processor import BatchProcessor
+from .batch_processor import BatchProcessor, conservative_worker_limit
 from .supported_formats import has_supported_image_extension, qt_image_file_filter
 from .version import __version__
 
@@ -68,6 +68,8 @@ class ProcessingThread(QThread):
         apply_mask_to_chi,
         apply_mask_to_cake,
         parallel_workers=1,
+        batch_file_sets=None,
+        batch_output_directories=None,
     ):
         super().__init__()
         self.processor = processor
@@ -80,12 +82,22 @@ class ProcessingThread(QThread):
         self.apply_mask_to_chi = apply_mask_to_chi
         self.apply_mask_to_cake = apply_mask_to_cake
         self.parallel_workers = parallel_workers
+        self.batch_file_sets = batch_file_sets
+        self.batch_output_directories = batch_output_directories
         
     def run(self):
         """Process files in background."""
         try:
-            stats = self.processor.process_file_set(
-                self.file_set,
+            process = (
+                self.processor.process_file_sets if self.batch_file_sets is not None
+                else self.processor.process_file_set
+            )
+            source_args = (
+                (self.batch_file_sets, self.batch_output_directories)
+                if self.batch_file_sets is not None else (self.file_set,)
+            )
+            stats = process(
+                *source_args,
                 export_chi=self.export_chi,
                 export_xy=self.export_xy,
                 export_dat=self.export_dat,
@@ -135,6 +147,7 @@ class DioptasBatchGUI(QMainWindow):
         self.selected_files = []
         self.current_file_set = []
         self.current_mode = "idle"  # idle | batch | sequence | watch
+        self._batch_bulk_active = False
         self.sequence_file_path = None
         self.sequence_digits = 0
         self.sequence_index = None
@@ -377,13 +390,6 @@ class DioptasBatchGUI(QMainWindow):
         overwrite_layout.addStretch()
         options_layout.addLayout(overwrite_layout)
 
-        self.parallel_workers_cb = QCheckBox("Use two workers for multi-frame files")
-        self.parallel_workers_cb.setChecked(True)
-        self.parallel_workers_cb.setToolTip(
-            "Process two frame ranges at once. Uses more memory; single-frame files stay serial."
-        )
-        options_layout.addWidget(self.parallel_workers_cb)
-        
         options_group.setLayout(options_layout)
         left_layout.addWidget(options_group)
         left_layout.addStretch(1)
@@ -431,6 +437,7 @@ class DioptasBatchGUI(QMainWindow):
             '<span style="color: #cc0000; font-weight: 600;">Red</span>: overwritten files | '
             '<span style="color: #008000; font-weight: 600;">Green</span>: skipped because output files already exist | '
             '<span style="color: #808080; font-weight: 600;">Gray</span>: cancelled files | '
+            '<span style="color: #D18AFF; font-weight: 600;">Purple</span>: failed files | '
             '<span style="color: #0055CC; font-weight: 600;">Blue</span>: latest processed | White: processed files | '
             "White italic: pending files"
         )
@@ -623,6 +630,41 @@ class DioptasBatchGUI(QMainWindow):
         layout.setContentsMargins(8, 6, 8, 8)
         layout.setSpacing(8)
 
+        workers_layout = QHBoxLayout()
+        self.parallel_workers_cb = QCheckBox("Parallel processing")
+        self.parallel_workers_cb.setChecked(False)
+        self.parallel_workers_cb.setToolTip(
+            "Process files or frames in separate processes. Uncheck to process serially."
+        )
+        workers_layout.addWidget(self.parallel_workers_cb)
+        workers_layout.addWidget(QLabel("Workers:"))
+        worker_limit = conservative_worker_limit()
+        self.worker_count_spin = QSpinBox()
+        self.worker_count_spin.setRange(2, max(2, worker_limit))
+        self.worker_count_spin.setValue(2)
+        self.worker_count_spin.setToolTip(
+            "Conservative limit based on CPU count and installed memory; "
+            "at most three processes run concurrently."
+        )
+        self.parallel_workers_cb.toggled.connect(self.worker_count_spin.setEnabled)
+        workers_layout.addWidget(self.worker_count_spin)
+        self.worker_count_spin.setVisible(worker_limit > 2)
+        self.worker_limit_label = QLabel(
+            "Parallel processing unavailable on this computer" if worker_limit < 2 else
+            "2 (safe maximum on this computer)" if worker_limit == 2 else
+            f"(safe maximum: {worker_limit} on this computer)"
+        )
+        self.parallel_workers_cb.toggled.connect(self.worker_limit_label.setEnabled)
+        workers_layout.addWidget(self.worker_limit_label)
+        self.worker_count_spin.setEnabled(False)
+        self.worker_limit_label.setEnabled(False)
+        workers_layout.addStretch()
+        layout.addLayout(workers_layout)
+        if worker_limit < 2:
+            self.parallel_workers_cb.setChecked(False)
+            self.parallel_workers_cb.setEnabled(False)
+            self.worker_count_spin.setEnabled(False)
+
         # File selection
         # Row 1: Select Files and Process
         row1_layout = QHBoxLayout()
@@ -687,18 +729,58 @@ class DioptasBatchGUI(QMainWindow):
         self.select_files_btn.setEnabled(not is_processing)
         self.clear_selection_btn.setEnabled(not is_processing)
         self.abort_batch_btn.setEnabled(is_processing and self.current_mode == "batch")
+        self.parallel_workers_cb.setEnabled(not is_processing and conservative_worker_limit() > 1)
+        self.worker_count_spin.setEnabled(
+            not is_processing and self.parallel_workers_cb.isChecked()
+            and conservative_worker_limit() > 1
+        )
+        self.worker_limit_label.setEnabled(
+            not is_processing and self.parallel_workers_cb.isChecked()
+        )
+
+    def _worker_count_for_current_mode(self) -> int:
+        """Only Batch mode uses the configured parallel worker count."""
+        if self.current_mode == "batch" and self.parallel_workers_cb.isChecked():
+            return self.worker_count_spin.value()
+        return 1
 
     def _request_batch_abort(self):
-        """Stop batch processing after the active file set completes."""
+        """Confirm the risk of partial outputs before stopping Batch mode."""
         if self.current_mode != "batch" or self.processing_thread is None or self.abort_requested:
+            return
+
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setWindowTitle("Abort batch processing?")
+        dialog.setText(
+            "All files generated for a snapshot interrupted by Abort may be incomplete "
+            "or corrupted."
+        )
+        dialog.setInformativeText(
+            "To process the selected data again, check 'Overwrite existing files' and "
+            "rerun the entire batch. Serial processing may finish its current snapshot "
+            "before stopping. Stop processing now?"
+        )
+        abort_button = dialog.addButton("Abort processing", QMessageBox.ButtonRole.AcceptRole)
+        continue_button = dialog.addButton(
+            "Continue processing", QMessageBox.ButtonRole.RejectRole
+        )
+        dialog.setDefaultButton(continue_button)
+        dialog.exec()
+        if dialog.clickedButton() is not abort_button or self.processing_thread is None:
             return
 
         self.abort_requested = True
         self.abort_batch_btn.setEnabled(False)
-        self._append_log(
-            "ABORT: current file set will finish, then remaining queued files will be removed."
-        )
-        self.status_label.setText("Status: Abort requested; finishing current file set...")
+        if self._batch_bulk_active:
+            self.processing_thread.requestInterruption()
+            self._append_log("ABORT: stopping active workers; partial outputs may need overwrite.")
+            self.status_label.setText("Status: Abort requested; stopping workers...")
+        else:
+            self._append_log(
+                "ABORT: current file set will finish, then remaining queued files will be removed."
+            )
+            self.status_label.setText("Status: Abort requested; finishing current file set...")
 
     def _finalize_batch_abort(self):
         """Clear the queued-but-unprocessed batch files after an abort request."""
@@ -1005,14 +1087,14 @@ class DioptasBatchGUI(QMainWindow):
                 ("overwrite", self.overwrite_cb, False),
             ):
                 checkbox.setChecked(settings.value(key, default, type=bool))
-            if settings.value("parallel_workers_default_on_migrated", False, type=bool):
-                two_workers = settings.value("parallel_workers_two", True, type=bool)
-            else:
-                # Earlier releases saved the old unchecked default as a preference.
-                two_workers = True
-                settings.setValue("parallel_workers_two", True)
-                settings.setValue("parallel_workers_default_on_migrated", True)
-            self.parallel_workers_cb.setChecked(two_workers)
+            if not settings.value("batch_parallel_default_off_migrated", False, type=bool):
+                settings.setValue("batch_parallel_enabled", False)
+                settings.setValue("batch_parallel_default_off_migrated", True)
+            self.parallel_workers_cb.setChecked(
+                settings.value("batch_parallel_enabled", False, type=bool)
+                and conservative_worker_limit() > 1
+            )
+            self.worker_count_spin.setValue(settings.value("batch_worker_count", 2, type=int))
             integration_points = str(settings.value("last_integration_points", "Auto"))
             if integration_points == "Auto" or integration_points.isdigit():
                 self.integration_points_edit.setText(integration_points)
@@ -1039,7 +1121,7 @@ class DioptasBatchGUI(QMainWindow):
                     "path", "status", "completed_at"
                 ))
                 and record["status"] in {
-                    "pending", "processed", "skipped", "overwritten", "cancelled"
+                    "pending", "processed", "skipped", "overwritten", "cancelled", "failed"
                 }
             ]
             self._render_file_history()
@@ -1104,7 +1186,8 @@ class DioptasBatchGUI(QMainWindow):
         settings.setValue("export_metadata", self.export_metadata_cb.isChecked())
         settings.setValue("apply_mask_to_chi", self.apply_mask_to_chi_cb.isChecked())
         settings.setValue("apply_mask_to_cake", self.apply_mask_to_cake_cb.isChecked())
-        settings.setValue("parallel_workers_two", self.parallel_workers_cb.isChecked())
+        settings.setValue("batch_parallel_enabled", self.parallel_workers_cb.isChecked())
+        settings.setValue("batch_worker_count", self.worker_count_spin.value())
         settings.setValue("last_integration_points", self.integration_points_edit.text())
         settings.setValue("overwrite", self.overwrite_cb.isChecked())
         settings.setValue("active_tab", self.mode_tabs.currentIndex())
@@ -1408,10 +1491,40 @@ class DioptasBatchGUI(QMainWindow):
             # Disable controls
             self._set_batch_mode_controls(True)
             
-            # Process files
+            # Process all selected file sets under one shared worker limit.
             self.pending_files = [f for group in file_groups for f in group]
-            self._update_stats_label()
-            self._process_next_batch()
+            self._batch_bulk_active = True
+            self.stats_label.setText(
+                f"Requested files: {self.requested_input_files} | "
+                f"Images completed: 0/{self.requested_images}"
+            )
+            self.progress_bar.setMaximum(max(self.requested_images, 1))
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("%v/%m images")
+            self.processing_thread = ProcessingThread(
+                self.processor, None,
+                self.export_chi_cb.isChecked(),
+                self.export_xy_cb.isChecked(),
+                self.export_dat_cb.isChecked(),
+                self.export_npy_cb.isChecked(),
+                self.export_metadata_cb.isChecked(),
+                self.apply_mask_to_chi_cb.isChecked(),
+                self.apply_mask_to_cake_cb.isChecked(),
+                self._worker_count_for_current_mode(),
+                batch_file_sets=file_groups,
+                batch_output_directories=[
+                    str(self._output_directory_for_file_set(group)) for group in file_groups
+                ],
+            )
+            self.processing_thread.progress.connect(self._update_progress)
+            self.processing_thread.result_ready.connect(self._store_processing_result)
+            self.processing_thread.error.connect(self._store_processing_error)
+            self.processing_thread.finished.connect(self._processing_thread_finished)
+            self.processing_thread.integration_points_estimated.connect(
+                self._update_integration_points_spinbox
+            )
+            self.processing_thread.start()
+            self.status_label.setText("Status: Processing batch...")
             
         except Exception as e:
             import traceback
@@ -1608,7 +1721,7 @@ class DioptasBatchGUI(QMainWindow):
             self.export_metadata_cb.isChecked(),
             self.apply_mask_to_chi_cb.isChecked(),
             self.apply_mask_to_cake_cb.isChecked(),
-            2 if self.parallel_workers_cb.isChecked() else 1,
+            self._worker_count_for_current_mode(),
         )
         self.processing_thread.progress.connect(self._update_progress)
         self.processing_thread.result_ready.connect(self._store_processing_result)
@@ -1643,6 +1756,17 @@ class DioptasBatchGUI(QMainWindow):
             self.progress_bar.setMaximum(total_images)
             self.progress_bar.setValue(progress_value)
             self.progress_bar.setFormat("%v/%m images")
+            if self._batch_bulk_active:
+                abort_suffix = " | abort requested" if self.abort_requested else ""
+                self.stats_label.setText(
+                    f"Requested files: {self.requested_input_files} | "
+                    f"Images completed: {progress_value}/{total_images}"
+                )
+                self.status_label.setText(
+                    f"Status: Processing {message} | "
+                    f"{progress_value}/{total_images} completed{abort_suffix}"
+                )
+                return
             current_set_idx = self.completed_file_sets + 1
             abort_suffix = " | abort queued" if self.abort_requested else ""
             self.status_label.setText(
@@ -1706,6 +1830,10 @@ class DioptasBatchGUI(QMainWindow):
         """Mark cancelled source files in the side-panel history."""
         self._record_file_history_status(file_paths, "cancelled")
 
+    def _record_failed_files(self, file_paths):
+        """Mark source files with incomplete processing."""
+        self._record_file_history_status(file_paths, "failed")
+
     def _add_pending_files(self, file_paths):
         """Append pending source files to the side-panel history."""
         for file_path in file_paths:
@@ -1768,6 +1896,8 @@ class DioptasBatchGUI(QMainWindow):
                 path_label.setStyleSheet("color: #cc0000;")
             elif record["status"] == "cancelled":
                 path_label.setStyleSheet("color: #808080;")
+            elif record["status"] == "failed":
+                path_label.setStyleSheet("color: #7B2CBF;")
             else:
                 path_label.setStyleSheet("color: #000000;")
             available_width = max(
@@ -1789,6 +1919,8 @@ class DioptasBatchGUI(QMainWindow):
                 processed_item.setForeground(Qt.GlobalColor.red)
             elif record["status"] == "cancelled":
                 processed_item.setForeground(Qt.GlobalColor.gray)
+            elif record["status"] == "failed":
+                processed_item.setForeground(QColor("#7B2CBF"))
             elif is_latest:
                 path_label.setStyleSheet("color: #0055CC;")
                 processed_item.setForeground(Qt.GlobalColor.blue)
@@ -1881,6 +2013,49 @@ class DioptasBatchGUI(QMainWindow):
                 self.status_label.setText("Status: All files processed")
                 # Re-enable batch mode controls
                 self._set_batch_mode_controls(False)
+
+    def _batch_processing_finished(self, result):
+        """Apply per-file Batch results after the shared worker pool finishes."""
+        self._batch_bulk_active = False
+        self.completed_images = result["processed"]
+        failed_images = 0
+        for file_set, stats in result["file_results"]:
+            for path in file_set:
+                if path in self.pending_files:
+                    self.pending_files.remove(path)
+            if stats is None or stats.get("cancelled"):
+                self._record_cancelled_files(file_set)
+                continue
+            self.completed_file_sets += 1
+            self._append_log(
+                f"Completed {Path(file_set[0]).name}: "
+                f"{stats['processed']}/{stats['total_images']} images"
+            )
+            if stats["failed"]:
+                failed_images += stats["failed"]
+                self._append_log(
+                    f"ERROR: {Path(file_set[0]).name} failed images: {stats['failed_indices']}"
+                )
+                self._record_failed_files(file_set)
+            elif stats["processed"] == stats["skipped"]:
+                self._record_skipped_files(file_set)
+            elif stats["overwritten"]:
+                self._record_overwritten_files(file_set)
+            else:
+                self._record_processed_files(file_set)
+        self.progress_bar.setMaximum(max(result["total_images"], 1))
+        self.progress_bar.setValue(min(self.completed_images, self.progress_bar.maximum()))
+        self.progress_bar.setFormat("%v/%m images")
+        self._update_stats_label({
+            "processed": result["processed"], "total_images": result["total_images"]
+        })
+        self.status_label.setText(
+            "Status: Batch aborted" if result["cancelled"] else
+            f"Status: {failed_images} image(s) failed" if failed_images else
+            "Status: All files processed"
+        )
+        self.abort_requested = False
+        self._set_batch_mode_controls(False)
             
     def _processing_error(self, error_msg):
         """Handle processing error."""
@@ -1889,8 +2064,21 @@ class DioptasBatchGUI(QMainWindow):
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("%v/%m images")
         else:
-            self.progress_bar.setValue(min(self.completed_images, self.progress_bar.maximum()))
+            self.progress_bar.setValue(min(self.progress_bar.value(), self.progress_bar.maximum()))
         self._append_log(f"ERROR: {error_msg}")
+        if self._batch_bulk_active:
+            self._batch_bulk_active = False
+            if self.pending_files:
+                if self.abort_requested:
+                    self._record_cancelled_files(self.pending_files)
+                else:
+                    self._record_failed_files(self.pending_files)
+                self.pending_files = []
+            self.status_label.setText("Status: Error occurred")
+            self.abort_requested = False
+            self._set_batch_mode_controls(False)
+            self._update_stats_label()
+            return
         if self.current_mode == "batch" and self.abort_requested:
             self.status_label.setText("Status: Error occurred while abort was pending")
             self._finalize_batch_abort()
@@ -1929,7 +2117,10 @@ class DioptasBatchGUI(QMainWindow):
             return
 
         if result is not None:
-            self._processing_finished(result)
+            if "file_results" in result:
+                self._batch_processing_finished(result)
+            else:
+                self._processing_finished(result)
             return
 
         self._append_log("ERROR: Processing thread exited without returning a result.")

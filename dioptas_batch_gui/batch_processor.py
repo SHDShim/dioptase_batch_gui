@@ -10,6 +10,7 @@ import logging
 import multiprocessing
 import queue
 import shutil
+import time
 import uuid
 import numpy as np
 import json
@@ -34,6 +35,39 @@ logger = logging.getLogger(__name__)
 METADATA_SCHEMA_VERSION = "1.0"
 METADATA_FILE_SUFFIX = ".metadata.v1.json"
 MAX_INLINE_DATASET_ITEMS = 10000
+ABORT_WORKER_GRACE_SECONDS = 2.0
+
+
+def conservative_worker_limit() -> int:
+    """Reserve CPU and memory for other applications during diffraction processing."""
+    cpu_limit = max(1, (os.cpu_count() or 1) // 2)
+    try:
+        physical_bytes = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        memory_limit = max(1, physical_bytes // (8 * 1024**3))
+    except (AttributeError, OSError, ValueError):
+        memory_limit = 2
+    return min(3, cpu_limit, memory_limit)
+
+
+def _empty_file_stats(total_images=0) -> dict:
+    """Return a fresh per-file statistics record."""
+    return {
+        'total_images': total_images,
+        'processed': 0,
+        'failed': 0,
+        'failed_indices': [],
+        'skipped': 0,
+        'overwritten': 0,
+        'chi_files': [],
+        'xy_files': [],
+        'dat_files': [],
+        'npy_files': [],
+        'metadata_files': [],
+        'metadata_created': 0,
+        'metadata_updated': 0,
+        'metadata_versioned': 0,
+        'cancelled': False,
+    }
 
 
 def _parallel_file_worker(config_kwargs, file_set, image_indices, options, messages, stop_event):
@@ -56,6 +90,59 @@ def _parallel_file_worker(config_kwargs, file_set, image_indices, options, messa
             should_continue=lambda: not stop_event.is_set(),
         )
         messages.put(("result", stats))
+    except Exception as exc:
+        messages.put(("error", str(exc)))
+    finally:
+        root_logger.removeHandler(handler)
+
+
+def _parallel_batch_worker(config_kwargs, tasks, options, messages, stop_event):
+    """Process assigned file sets serially with one process-local configuration."""
+    handler = logging.Handler()
+    handler.emit = lambda record: messages.put(("log", (record.levelno, record.getMessage())))
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+    try:
+        processor = BatchProcessor(**config_kwargs)
+        for index, file_set, output_directory in tasks:
+            if stop_event.is_set():
+                break
+            processor.set_output_directory(output_directory)
+            stats = processor.process_file_set(
+                file_set,
+                **options,
+                progress_callback=lambda current, total, message, index=index: messages.put(
+                    ("progress", (index, message))
+                ),
+                estimate_callback=lambda points: messages.put(("estimate", points)),
+                should_continue=lambda: not stop_event.is_set(),
+            )
+            if stats["failed_indices"] and not stats["cancelled"]:
+                retry = processor.process_file_set(
+                    file_set, **options, image_indices=stats["failed_indices"],
+                    should_continue=lambda: not stop_event.is_set(),
+                    progress_callback=lambda current, total, message, index=index: messages.put(
+                        ("progress", (index, f"Retry: {message}"))
+                    ),
+                )
+                if retry["failed_indices"]:
+                    logger.error(
+                        "File set %s could not complete image indices %s after a serial retry",
+                        file_set[0], retry["failed_indices"],
+                    )
+                stats["processed"] += retry["processed"]
+                stats["failed"] = retry["failed"]
+                stats["failed_indices"] = retry["failed_indices"]
+                stats["cancelled"] = stats["cancelled"] or retry["cancelled"]
+                for key in ("skipped", "overwritten", "metadata_created", "metadata_updated",
+                            "metadata_versioned"):
+                    stats[key] += retry[key]
+                for key in ("chi_files", "xy_files", "dat_files", "npy_files", "metadata_files"):
+                    stats[key].extend(retry[key])
+            messages.put(("batch_result", (index, stats)))
+            processor._source_metadata_cache.clear()
+        messages.put(("batch_done", None))
     except Exception as exc:
         messages.put(("error", str(exc)))
     finally:
@@ -1155,14 +1242,17 @@ class BatchProcessor:
         
     def _process_file_set_parallel(
         self, file_set, n_images, options, progress_callback, estimate_callback,
-        should_continue,
+        should_continue, worker_count,
     ) -> dict:
-        """Process two non-overlapping frame ranges in independent processes."""
+        """Process non-overlapping frame ranges in independent processes."""
         context = multiprocessing.get_context("spawn")
         messages = context.Queue()
         stop_event = context.Event()
-        midpoint = n_images // 2
-        ranges = (list(range(midpoint)), list(range(midpoint, n_images)))
+        ranges = [
+            list(range(n_images * worker // worker_count,
+                       n_images * (worker + 1) // worker_count))
+            for worker in range(worker_count)
+        ]
         config_kwargs = {
             "calibration_file": self.calibration_file,
             "output_directory": str(self.output_directory),
@@ -1180,26 +1270,38 @@ class BatchProcessor:
             for indices in ranges
         ]
         worker_stats = []
-        started = 0
+        completed = 0
+        launched_processes = []
+        abort_deadline = None
+        aborted_early = False
         try:
             for process in processes:
                 process.start()
+                launched_processes.append(process)
             while len(worker_stats) < len(processes):
                 if should_continue is not None and not should_continue():
                     stop_event.set()
+                    if abort_deadline is None:
+                        abort_deadline = time.monotonic() + ABORT_WORKER_GRACE_SECONDS
+                if abort_deadline is not None and time.monotonic() >= abort_deadline:
+                    aborted_early = True
+                    break
                 try:
                     kind, payload = messages.get(timeout=0.2)
                 except queue.Empty:
                     if all(not process.is_alive() for process in processes):
+                        if abort_deadline is not None:
+                            aborted_early = True
+                            break
                         # A child may have exited without delivering its result.
                         raise RuntimeError("Parallel worker exited without a result")
                     continue
                 if kind == "log":
                     logger.log(*payload)
                 elif kind == "progress":
-                    started += 1
+                    completed += 1
                     if progress_callback:
-                        progress_callback(started, n_images, payload)
+                        progress_callback(completed, n_images, payload)
                 elif kind == "estimate" and estimate_callback:
                     estimate_callback(payload)
                 elif kind == "result":
@@ -1209,13 +1311,19 @@ class BatchProcessor:
                     raise RuntimeError(f"Parallel worker failed: {payload}")
         finally:
             stop_event.set()
-            for process in processes:
-                process.join(timeout=10)
+            for process in launched_processes:
+                process.join(timeout=0.2 if abort_deadline is not None else 10)
                 if process.is_alive():
                     process.terminate()
                     process.join()
             messages.close()
             messages.join_thread()
+
+        if aborted_early:
+            stats = _empty_file_stats(n_images)
+            stats["processed"] = completed
+            stats["cancelled"] = True
+            return stats
 
         merged = worker_stats[0]
         for part in worker_stats[1:]:
@@ -1226,11 +1334,208 @@ class BatchProcessor:
                 merged[key] += part[key]
             for key in ("chi_files", "xy_files", "dat_files", "npy_files", "metadata_files"):
                 merged[key].extend(part[key])
+            merged["failed_indices"].extend(part["failed_indices"])
             merged["cancelled"] = merged["cancelled"] or part["cancelled"]
+        if should_continue is not None and not should_continue():
+            merged["cancelled"] = True
+        if merged["failed_indices"] and should_continue is not None and not should_continue():
+            merged["cancelled"] = True
+        if merged["failed_indices"] and not merged["cancelled"]:
+            failed_indices = sorted(merged["failed_indices"])
+            logger.warning(
+                "Retrying %d failed image(s) in the main process: %s",
+                len(failed_indices), failed_indices,
+            )
+            retry_completed = 0
+
+            def report_retry(current, total, message):
+                nonlocal retry_completed
+                retry_completed += 1
+                if progress_callback:
+                    progress_callback(completed + retry_completed, n_images, f"Retry: {message}")
+
+            retry = self.process_file_set(
+                file_set,
+                **options,
+                image_indices=failed_indices,
+                estimate_callback=estimate_callback,
+                should_continue=should_continue,
+                progress_callback=report_retry if progress_callback else None,
+            )
+            merged["failed"] -= len(failed_indices)
+            for key in (
+                "processed", "failed", "skipped", "overwritten", "metadata_created",
+                "metadata_updated", "metadata_versioned",
+            ):
+                merged[key] += retry[key]
+            for key in ("chi_files", "xy_files", "dat_files", "npy_files", "metadata_files"):
+                merged[key].extend(retry[key])
+            merged["failed_indices"] = retry["failed_indices"]
+            merged["cancelled"] = retry["cancelled"]
+            if retry["cancelled"]:
+                merged["failed"] += len(failed_indices) - retry["processed"] - retry["failed"]
+            elif merged["failed_indices"]:
+                raise RuntimeError(
+                    "Parallel processing could not complete image indices "
+                    f"{merged['failed_indices']} after a serial retry"
+                )
         merged["total_images"] = n_images
         for key in ("chi_files", "xy_files", "dat_files", "npy_files", "metadata_files"):
             merged[key].sort()
         return merged
+
+    def process_file_sets(
+        self, file_sets, output_directories, workers=1, progress_callback=None,
+        estimate_callback=None, should_continue=None, **options,
+    ) -> dict:
+        """Process Batch mode file sets within one global worker budget."""
+        if len(file_sets) != len(output_directories):
+            raise ValueError("Each file set needs an output directory")
+        if workers < 1:
+            raise ValueError("workers must be at least 1")
+        if not file_sets:
+            return {"file_results": [], "total_images": 0, "processed": 0, "cancelled": False}
+
+        counts = [self.get_image_count(file_set) for file_set in file_sets]
+        total_images = sum(counts)
+        results = [None] * len(file_sets)
+        completed = 0
+
+        def report_progress(index, message):
+            nonlocal completed
+            completed += 1
+            if progress_callback:
+                progress_callback(
+                    completed, total_images,
+                    f"{Path(file_sets[index][0]).name}: {message}",
+                )
+
+        if len(file_sets) == 1:
+            self.set_output_directory(output_directories[0])
+            results[0] = self.process_file_set(
+                file_sets[0], workers=workers,
+                progress_callback=lambda current, total, message: report_progress(0, message),
+                estimate_callback=estimate_callback, should_continue=should_continue, **options,
+            )
+        else:
+            # Files with the same output stem must stay on one worker to avoid
+            # writing the same artifact at the same time.
+            grouped = {}
+            output_names = set()
+            output_collision = False
+            for index, (file_set, output_directory) in enumerate(zip(file_sets, output_directories)):
+                directory = str(Path(output_directory).resolve())
+                key = (directory, self._file_set_base_name(file_set))
+                grouped.setdefault(key, []).append(index)
+                base = self._file_set_base_name(file_set)
+                for image_index in range(counts[index]):
+                    base_name = self._snapshot_output_name(base, image_index, counts[index])
+                    output_key = (directory, base_name)
+                    if output_key in output_names:
+                        output_collision = True
+                    output_names.add(output_key)
+            groups = sorted(grouped.values(), key=lambda group: -sum(counts[i] for i in group))
+            worker_count = min(workers, len(groups), conservative_worker_limit())
+            if output_collision:
+                logger.warning("Overlapping output names detected; processing this batch serially")
+                worker_count = 1
+            if worker_count == 1:
+                for index, (file_set, output_directory) in enumerate(zip(file_sets, output_directories)):
+                    if should_continue is not None and not should_continue():
+                        break
+                    self.set_output_directory(output_directory)
+                    results[index] = self.process_file_set(
+                        file_set,
+                        progress_callback=lambda current, total, message, index=index:
+                            report_progress(index, message),
+                        estimate_callback=estimate_callback, should_continue=should_continue,
+                        **options,
+                    )
+                    self._source_metadata_cache.clear()
+            else:
+                assignments = [[] for _ in range(worker_count)]
+                loads = [0] * worker_count
+                for group in groups:
+                    worker = min(range(worker_count), key=lambda i: loads[i])
+                    for index in group:
+                        assignments[worker].append((index, file_sets[index], output_directories[index]))
+                        loads[worker] += counts[index]
+                context = multiprocessing.get_context("spawn")
+                messages = context.Queue()
+                stop_event = context.Event()
+                config_kwargs = {
+                    "calibration_file": self.calibration_file,
+                    "output_directory": str(output_directories[0]),
+                    "mask_file": self.mask_file,
+                    "num_points": self.num_points,
+                    "integration_method": self.integration_method,
+                    "cake_azimuth_points": self.cake_azimuth_points,
+                    "overwrite": self.overwrite,
+                }
+                processes = [
+                    context.Process(
+                        target=_parallel_batch_worker,
+                        args=(config_kwargs, tasks, options, messages, stop_event),
+                    )
+                    for tasks in assignments
+                ]
+                launched = []
+                done = 0
+                abort_deadline = None
+                try:
+                    for process in processes:
+                        process.start()
+                        launched.append(process)
+                    while done < len(processes):
+                        if should_continue is not None and not should_continue():
+                            stop_event.set()
+                            if abort_deadline is None:
+                                abort_deadline = time.monotonic() + ABORT_WORKER_GRACE_SECONDS
+                        if abort_deadline is not None and time.monotonic() >= abort_deadline:
+                            break
+                        try:
+                            kind, payload = messages.get(timeout=0.2)
+                        except queue.Empty:
+                            if all(not process.is_alive() for process in processes):
+                                if abort_deadline is not None:
+                                    break
+                                raise RuntimeError("Batch worker exited without a result")
+                            continue
+                        if kind == "log":
+                            logger.log(*payload)
+                        elif kind == "progress":
+                            report_progress(*payload)
+                        elif kind == "estimate" and estimate_callback:
+                            estimate_callback(payload)
+                        elif kind == "batch_result":
+                            index, stats = payload
+                            results[index] = stats
+                        elif kind == "batch_done":
+                            done += 1
+                        elif kind == "error":
+                            stop_event.set()
+                            raise RuntimeError(f"Batch worker failed: {payload}")
+                finally:
+                    stop_event.set()
+                    for process in launched:
+                        process.join(timeout=0.2 if abort_deadline is not None else 10)
+                        if process.is_alive():
+                            process.terminate()
+                            process.join()
+                    messages.close()
+                    messages.join_thread()
+
+        return {
+            "file_results": list(zip(file_sets, results)),
+            "total_images": total_images,
+            "processed": max(
+                completed, sum(stats["processed"] for stats in results if stats is not None)
+            ),
+            "cancelled": (
+                any(stats is None or stats["cancelled"] for stats in results)
+                or (should_continue is not None and not should_continue())
+            ),
+        }
 
     def process_file_set(self, 
                         file_set: List[str],
@@ -1259,7 +1564,7 @@ class BatchProcessor:
             apply_mask_to_chi: Apply mask during CHI integration
             apply_mask_to_cake: Apply mask during cake integration
             progress_callback: Optional callback function(current, total, status_msg)
-            workers: 1 (default) or 2 independent processes for a multi-frame file
+            workers: Requested process count for a multi-frame file (1 is serial)
             image_indices: Optional subset used by independent worker processes
             
         Returns:
@@ -1268,22 +1573,7 @@ class BatchProcessor:
         if not file_set or any(not has_supported_image_extension(path) for path in file_set):
             raise ValueError("File set must contain supported diffraction image files")
 
-        stats = {
-            'total_images': 0,
-            'processed': 0,
-            'failed': 0,
-            'skipped': 0,
-            'overwritten': 0,
-            'chi_files': [],
-            'xy_files': [],
-            'dat_files': [],
-            'npy_files': [],
-            'metadata_files': [],
-            'metadata_created': 0,
-            'metadata_updated': 0,
-            'metadata_versioned': 0,
-            'cancelled': False,
-        }
+        stats = _empty_file_stats()
         
         # Get base name for output files
         base_name = self._file_set_base_name(file_set)
@@ -1296,8 +1586,13 @@ class BatchProcessor:
             logger.error(f"No images found in file set")
             return stats
 
-        if workers == 2 and image_indices is None and len(file_set) == 1 and n_images > 1:
-            logger.info(f"Processing {n_images} images with two worker processes")
+        if workers < 1:
+            raise ValueError("workers must be at least 1")
+        worker_count = min(workers, n_images, conservative_worker_limit())
+        if worker_count > 1 and image_indices is None and len(file_set) == 1:
+            if worker_count < workers:
+                logger.info("Limited worker count from %d to %d", workers, worker_count)
+            logger.info("Processing %d images with %d worker processes", n_images, worker_count)
             return self._process_file_set_parallel(
                 file_set, n_images,
                 {
@@ -1309,7 +1604,7 @@ class BatchProcessor:
                     "apply_mask_to_cake": apply_mask_to_cake,
                     "export_metadata": export_metadata,
                 },
-                progress_callback, estimate_callback, should_continue,
+                progress_callback, estimate_callback, should_continue, worker_count,
             )
 
         indices = range(n_images) if image_indices is None else image_indices
@@ -1326,9 +1621,6 @@ class BatchProcessor:
                 )
                 break
 
-            if progress_callback:
-                progress_callback(img_idx + 1, n_images, f"Processing image {img_idx + 1}/{n_images}")
-                
             results = self.process_lambda_image(
                 file_set,
                 img_idx,
@@ -1367,6 +1659,13 @@ class BatchProcessor:
                     stats['metadata_versioned'] += 1
             else:
                 stats['failed'] += 1
+                stats['failed_indices'].append(img_idx)
+
+            if progress_callback and results['success']:
+                progress_callback(
+                    img_idx + 1, n_images,
+                    f"Completed image {img_idx + 1}/{n_images}",
+                )
 
             if n_images > 1:
                 logger.info("-" * 80)

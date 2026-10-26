@@ -135,12 +135,25 @@ python -m dioptas_batch_gui
 3. Select the **Calibration File** (`.poni`).
 4. Optionally select a **Mask File**.
 5. Configure integration points and azimuth bins.
-6. Choose the export options you want. **Use two workers for multi-frame files**
-   is checked by default. Each worker has its own Dioptas configuration, so this
-   uses more memory. Uncheck it to process serially; single-frame files always
-   run serially.
+6. Choose the export options you want. In **Batch Mode**, use **Parallel
+   processing** to choose serial or parallel processing and set the number of
+   workers. Parallel processing is unchecked by default; enabling it starts
+   with two workers. The maximum is limited by CPU count
+   and installed memory (up to three workers). Each worker has its own Dioptas
+   configuration, so parallel processing uses more memory. Batch workers can
+   split snapshots from one multi-frame HDF5 file or process separate file sets
+   concurrently, including a mix of single-frame and multi-frame HDF5 files.
+   Sequence Mode and Watch Mode run serially.
+   The Batch progress bar counts snapshots after their selected outputs finish;
+   failed snapshots remain below the total and are reported in the status and log.
+   When the safe maximum is two, the Batch tab displays that limit as text;
+   uncheck **Parallel processing** to run serially.
 7. Click **Start Watching** for automatic mode or **Process** for manual batch mode.
 8. Click **Stop Watching** when finished with auto-processing.
+
+In Batch Mode, **Abort** asks for confirmation. An interrupted snapshot can leave
+incomplete or inconsistent output files. To rerun the selected data after
+aborting, check **Overwrite existing files** and process the entire batch again.
 
 The app restores field values, output and mask options, the active tab, selected
 batch and sequence files, and file-list statuses when reopened. Watch and

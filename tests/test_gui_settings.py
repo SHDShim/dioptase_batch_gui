@@ -1,5 +1,7 @@
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from PyQt6.QtCore import QSettings as QtSettings
 from PyQt6.QtWidgets import QApplication
 
@@ -8,6 +10,7 @@ import dioptas_batch_gui.gui as gui_module
 
 def test_gui_state_restores_after_close(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(gui_module, "conservative_worker_limit", lambda: 3)
     saved = {}
 
     class MemorySettings:
@@ -43,6 +46,7 @@ def test_gui_state_restores_after_close(monkeypatch, tmp_path):
     first.apply_mask_to_cake_cb.setChecked(True)
     first.overwrite_cb.setChecked(True)
     first.parallel_workers_cb.setChecked(False)
+    first.worker_count_spin.setValue(3)
     first.integration_points_edit.setText("4756")
     first.mode_tabs.setCurrentIndex(1)
     first.sequence_nav_time_rb.setChecked(True)
@@ -79,6 +83,7 @@ def test_gui_state_restores_after_close(monkeypatch, tmp_path):
         assert second.apply_mask_to_cake_cb.isChecked()
         assert second.overwrite_cb.isChecked()
         assert not second.parallel_workers_cb.isChecked()
+        assert second.worker_count_spin.value() == 3
         assert second.integration_points_edit.text() == "4756"
         assert second.mode_tabs.currentIndex() == 1
         assert second.sequence_nav_time_rb.isChecked()
@@ -162,3 +167,158 @@ def test_settings_survive_with_qt_ini_storage(monkeypatch, tmp_path):
         assert second.process_batch_btn.isEnabled()
     finally:
         second.close()
+
+
+def test_parallel_controls_apply_only_to_batch_mode(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(gui_module, "conservative_worker_limit", lambda: 3)
+    app = QApplication.instance() or QApplication([])
+    window = gui_module.DioptasBatchGUI()
+    try:
+        window.parallel_workers_cb.setChecked(True)
+        window.worker_count_spin.setValue(3)
+        assert not window.worker_count_spin.isHidden()
+        assert window.worker_limit_label.text() == "(safe maximum: 3 on this computer)"
+        window.current_mode = "batch"
+        assert window._worker_count_for_current_mode() == 3
+        window.parallel_workers_cb.setChecked(False)
+        assert window._worker_count_for_current_mode() == 1
+        window.parallel_workers_cb.setChecked(True)
+        for mode in ("sequence", "watch"):
+            window.current_mode = mode
+            assert window._worker_count_for_current_mode() == 1
+        assert window.parallel_workers_cb.parent() is window.mode_tabs.widget(0)
+    finally:
+        window.close()
+
+
+def test_two_worker_limit_is_explained_in_batch_tab(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(gui_module, "conservative_worker_limit", lambda: 2)
+    app = QApplication.instance() or QApplication([])
+    window = gui_module.DioptasBatchGUI()
+    try:
+        window.current_mode = "batch"
+        window.parallel_workers_cb.setChecked(True)
+        assert window.worker_count_spin.isHidden()
+        assert window.worker_limit_label.text() == "2 (safe maximum on this computer)"
+        assert window._worker_count_for_current_mode() == 2
+        window.parallel_workers_cb.setChecked(False)
+        assert window._worker_count_for_current_mode() == 1
+    finally:
+        window.close()
+
+
+def test_batch_thread_routes_multiple_file_sets_to_shared_scheduler(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    calls = []
+
+    class Processor:
+        def process_file_sets(self, file_sets, output_directories, **options):
+            calls.append((file_sets, output_directories, options["workers"]))
+            options["progress_callback"](1, 2, "a.h5: Completed image 1/1")
+            return {"file_results": [], "total_images": 2, "processed": 1}
+
+    thread = gui_module.ProcessingThread(
+        Processor(), None, True, False, False, False, False, True, False, 2,
+        batch_file_sets=[["a.h5"], ["b.h5"]],
+        batch_output_directories=["out-a", "out-b"],
+    )
+    progress = []
+    results = []
+    thread.progress.connect(lambda current, total, message: progress.append((current, total, message)))
+    thread.result_ready.connect(results.append)
+    thread.run()
+    assert calls == [([["a.h5"], ["b.h5"]], ["out-a", "out-b"], 2)]
+    assert progress == [(1, 2, "a.h5: Completed image 1/1")]
+    assert results[0]["processed"] == 1
+
+
+def test_batch_progress_counts_finished_images_and_reports_failed_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    class EmptySettings:
+        def __init__(self, *_args):
+            pass
+
+        def value(self, _key, default=None, **_kwargs):
+            return default
+
+        def setValue(self, _key, _value):
+            pass
+
+        def sync(self):
+            pass
+
+    monkeypatch.setattr(gui_module, "QSettings", EmptySettings)
+    app = QApplication.instance() or QApplication([])
+    window = gui_module.DioptasBatchGUI()
+    source = str(tmp_path / "series.h5")
+    try:
+        window.current_mode = "batch"
+        window._batch_bulk_active = True
+        window.requested_file_sets = 1
+        window.requested_images = 3
+        window.pending_files = [source]
+        window._add_pending_files([source])
+        window._update_progress(1, 3, "series.h5: Completed image 1/3")
+        assert window.progress_bar.value() == 1
+        assert "1/3 completed" in window.status_label.text()
+        assert "Images completed: 1/3" in window.stats_label.text()
+        window._batch_processing_finished({
+            "file_results": [([source], {
+                "total_images": 3, "processed": 2, "failed": 1,
+                "failed_indices": [2], "skipped": 0, "overwritten": 0,
+                "cancelled": False,
+            })],
+            "total_images": 3, "processed": 2, "cancelled": False,
+        })
+        assert window.progress_bar.value() == 2
+        assert window.status_label.text() == "Status: 1 image(s) failed"
+        assert window.file_history_records[-1]["status"] == "failed"
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("confirm_abort", [False, True])
+def test_batch_abort_warns_before_interrupting_workers(monkeypatch, confirm_abort):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+
+    class EmptySettings:
+        def __init__(self, *_args):
+            pass
+
+        def value(self, _key, default=None, **_kwargs):
+            return default
+
+        def setValue(self, _key, _value):
+            pass
+
+        def sync(self):
+            pass
+
+    monkeypatch.setattr(gui_module, "QSettings", EmptySettings)
+    app = QApplication.instance() or QApplication([])
+    window = gui_module.DioptasBatchGUI()
+    interrupted = []
+    warning_text = []
+    window.processing_thread = SimpleNamespace(requestInterruption=lambda: interrupted.append(True))
+    window.current_mode = "batch"
+    window._batch_bulk_active = True
+
+    def choose_button(dialog):
+        warning_text.append(dialog.text() + " " + dialog.informativeText())
+        label = "Abort processing" if confirm_abort else "Continue processing"
+        next(button for button in dialog.buttons() if button.text() == label).click()
+        return 0
+
+    monkeypatch.setattr(gui_module.QMessageBox, "exec", choose_button)
+    try:
+        window._request_batch_abort()
+        assert "corrupted" in warning_text[0]
+        assert "Overwrite existing files" in warning_text[0]
+        assert interrupted == ([True] if confirm_abort else [])
+        assert window.abort_requested is confirm_abort
+    finally:
+        window.processing_thread = None
+        window.close()

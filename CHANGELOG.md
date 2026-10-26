@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-26
+
+- Added Batch-only serial and parallel controls with a conservative worker limit; serial processing is the default.
+- Parallelized batches containing separate HDF5 file sets, multi-frame files, or both.
+- Counted progress only after selected outputs finish and retried failed parallel frames once.
+- Added a confirmed Abort action with an overwrite warning and prompt parallel-worker termination.
+- Changed failed-file status from dark red to purple.
+
+## [0.6.0] - 2026-10-25
+
+- Added two-process conversion for multi-frame files, atomic output writes, and persistent GUI settings and file history.
+
 ## [0.5.8] - 2026-10-24
 
 - Limited source-image discovery in all modes to the selected diffraction formats, including `.hdf`.

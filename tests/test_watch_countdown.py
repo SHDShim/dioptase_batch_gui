@@ -64,9 +64,10 @@ def test_watch_countdown_matches_idle_deadline_and_resets(monkeypatch):
         window.close()
 
 
-def test_two_workers_becomes_default_once_and_opt_out_persists(monkeypatch):
+def test_parallel_defaults_off_and_saved_opt_in_persists(monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    saved = {"parallel_workers_two": False}
+    monkeypatch.setattr(gui_module, "conservative_worker_limit", lambda: 2)
+    saved = {"parallel_workers_two": True, "batch_parallel_enabled": True}
 
     class MemorySettings:
         def __init__(self, *_args):
@@ -84,13 +85,15 @@ def test_two_workers_becomes_default_once_and_opt_out_persists(monkeypatch):
     monkeypatch.setattr(gui_module, "QSettings", MemorySettings)
     app = QApplication.instance() or QApplication([])
     first_window = gui_module.DioptasBatchGUI()
-    assert first_window.parallel_workers_cb.isChecked()
-    assert saved["parallel_workers_default_on_migrated"] is True
+    assert not first_window.parallel_workers_cb.isChecked()
+    assert not first_window.worker_count_spin.isEnabled()
+    assert saved["batch_parallel_default_off_migrated"] is True
 
-    first_window.parallel_workers_cb.setChecked(False)
+    first_window.parallel_workers_cb.setChecked(True)
     first_window.close()
     second_window = gui_module.DioptasBatchGUI()
     try:
-        assert not second_window.parallel_workers_cb.isChecked()
+        assert second_window.parallel_workers_cb.isChecked()
+        assert second_window.worker_count_spin.value() == 2
     finally:
         second_window.close()
